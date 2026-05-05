@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // USERS collection
+    match /users/{userId} {
+      // Anyone authenticated can create their own profile
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      // Users can read their own profile, admins can read all
+      allow read: if isOwner(userId) || isAdmin();
+      // Users can update their own profile, admins can update any
+      allow update: if isOwner(userId) || isAdmin();
+      // Only admins can delete
+      allow delete: if isAdmin();
+    }
+
+    // EXAMS collection
+    match /exams/{examId} {
+      // Admins have full access
+      allow read, write: if isAdmin();
+      // Students can only read published exams
+      allow read: if isAuthenticated() && resource.data.isPublished == true;
+    }
+
+    // QUESTIONS collection
+    match /questions/{questionId} {
+      // Admins have full access
+      allow read, write: if isAdmin();
+      // Authenticated users can read (needed to take exam)
+      allow read: if isAuthenticated();
+    }
+
+    // ATTEMPTS collection
+    match /attempts/{attemptId} {
+      // Admins can read all attempts
+      allow read: if isAdmin();
+      // Students can create their own attempts
+      allow create: if isAuthenticated() &&
+        request.resource.data.studentId == request.auth.uid;
+      // Students can read and update their own in-progress attempts
+      allow read, update: if isAuthenticated() &&
+        resource.data.studentId == request.auth.uid;
+    }
+
+    // RESULTS collection
+    match /results/{resultId} {
+      // Admins can read all results
+      allow read: if isAdmin();
+      // Students can read their own results
+      allow read: if isAuthenticated() && resource.data.studentId == request.auth.uid;
+      // System can create results (via client SDK during evaluation)
+      allow create: if isAuthenticated();
+    }
+  }
+}
