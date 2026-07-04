@@ -1,3 +1,4 @@
 {
-  "framework": "vite"
+  "framework": "vite",
+  "outputDirectory": "dist"
 }
