@@ -1,10 +1,6 @@
 {
-<<<<<<< HEAD
   "framework": "vite",
   "outputDirectory": "dist",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-=======
   "rewrites": [
     {
       "source": "/api/(.*)",
@@ -14,6 +10,5 @@
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
->>>>>>> c67bcc0 (updated the project as per test QA)
   ]
 }
