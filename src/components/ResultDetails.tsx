@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { db } from '../lib/firebase';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { Attempt, Exam, Question } from '../types';
@@ -7,7 +7,7 @@ import { MathRenderer } from './MathRenderer';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { CheckCircle2, XCircle, ArrowLeft, RotateCcw, Award, Clock, ShieldAlert, Zap, TrendingUp, BrainCircuit, BarChart3, Timer } from 'lucide-react';
+import { CheckCircle2, XCircle, ArrowLeft, RotateCcw, Award, Clock, ShieldAlert, Zap, TrendingUp, BrainCircuit, BarChart3, Timer, LogOut } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { useAuth } from '../lib/AuthContext';
@@ -17,12 +17,24 @@ import {
 
 export const ResultDetails: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
+  const navigate = useNavigate();
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [exam, setExam] = useState<Exam | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState<string | null>(null);
-  const { profile } = useAuth();
+  const { profile, signOut } = useAuth();
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+      toast.success("Successfully logged out and closed session.");
+      navigate('/login');
+    } catch (err) {
+      console.error("Failed to logout:", err);
+      toast.error("Logout failed.");
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -149,9 +161,12 @@ export const ResultDetails: React.FC = () => {
     return (
       <div className="max-w-3xl mx-auto space-y-8 pb-20">
          <div className="flex items-center justify-between">
-            <Link to="/" className="flex items-center text-xs font-bold uppercase tracking-widest text-slate-400 hover:text-indigo-600 transition-colors">
-              <ArrowLeft className="h-4 w-4 mr-2" /> Return to Dashboard
-            </Link>
+            <button 
+              onClick={handleLogout} 
+              className="flex items-center text-xs font-bold uppercase tracking-widest text-rose-500 hover:text-rose-600 transition-colors bg-transparent border-none cursor-pointer p-0 font-bold"
+            >
+              <LogOut className="h-4 w-4 mr-2" /> Logout & Close Session
+            </button>
             <Button variant="outline" size="sm" className="rounded-xl font-bold text-xs uppercase" onClick={() => window.print()}>Print Receipt</Button>
          </div>
 
@@ -212,24 +227,13 @@ export const ResultDetails: React.FC = () => {
                </div>
             </div>
 
-            <div className="mt-6 p-6 bg-indigo-50 border-2 border-indigo-100 rounded-2xl flex items-start gap-4">
-               <div className="text-2xl pt-1 select-none">🌱</div>
-               <div className="space-y-2">
-                  <h4 className="text-sm font-black text-indigo-950 uppercase tracking-tight font-display">
-                     A Heartwarming Message for You!
-                  </h4>
-                  <p className="text-indigo-900 text-xs font-semibold leading-relaxed">
-                     Instead of immediate percentages, scorecards, or pass/fail labels (which can feel disappointing or create unnecessary peer comparisons), your school chooses a healthier, stress-free route! 
-                     Your teachers will look at your work with care, identify your special strengths, and guide you step-by-step. Go take some rest, play, or read your favorite stories. You did an exceptional job today, and we are proud of you! 🚀🌟
-                  </p>
-               </div>
-            </div>
+
 
             <div className="pt-4 flex justify-between items-center bg-slate-50 -mx-8 -mb-8 p-6 border-t border-slate-100">
                <span className="text-slate-400 text-[10px] uppercase font-bold tracking-widest font-mono">Secure proctored by SuvenEdu</span>
-               <Link to="/" className="inline-flex h-11 items-center justify-center bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-xl font-bold font-display uppercase text-xs tracking-wider px-6 shadow-lg transition-colors">
-                  Go to Dashboard
-               </Link>
+               <Button onClick={handleLogout} className="inline-flex h-11 items-center justify-center bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold font-display uppercase text-xs tracking-wider px-6 shadow-lg transition-colors border-none cursor-pointer">
+                  Logout & Close Session
+               </Button>
             </div>
          </Card>
       </div>

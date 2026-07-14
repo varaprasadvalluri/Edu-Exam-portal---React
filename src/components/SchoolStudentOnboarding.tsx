@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, setDoc, writeBatch, collection, query, where, onSnapshot, deleteDoc, getDoc, getDocs } from 'firebase/firestore';
+import { doc, setDoc, writeBatch, collection, query, where, onSnapshot, deleteDoc, getDoc, getDocs, limit, startAfter, getCountFromServer, orderBy } from 'firebase/firestore';
 import { useAuth } from '../lib/AuthContext';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
@@ -47,6 +47,8 @@ export const SchoolStudentOnboarding: React.FC = () => {
   const [students, setStudents] = useState<any[]>([]);
   const [exams, setExams] = useState<any[]>([]);
   const [selectedExamId, setSelectedExamId] = useState<string>('');
+  const [examDropdownOpen, setExamDropdownOpen] = useState(false);
+  const [examSearchText, setExamSearchText] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   
@@ -94,29 +96,23 @@ export const SchoolStudentOnboarding: React.FC = () => {
   const [invitations, setInvitations] = useState<any[]>([]);
   const [isGeneratingBatch, setIsGeneratingBatch] = useState(false);
 
-  // Query school students & published exams in real-time
+  // Pagination states for millions scale
+  const [totalStudentsCount, setTotalStudentsCount] = useState<number>(0);
+  const [lastVisibleDocs, setLastVisibleDocs] = useState<any[]>([]);
+  const [loadingStudents, setLoadingStudents] = useState<boolean>(false);
+  const [studentPage, setStudentPage] = useState(1);
+  const [studentPageSize, setStudentPageSize] = useState(10);
+
+  // Fetch School Name Details & Published Exams
   useEffect(() => {
     if (!profile?.schoolId) return;
 
-    // Fetch School Name Details
     getDoc(doc(db, 'schools', profile.schoolId)).then(snap => {
       if (snap.exists()) {
         setSchoolName(snap.data().name || 'Authorized Academic Hub');
       }
     }).catch(err => {
       console.error("Failed to read school details: ", err);
-    });
-
-    const studentsQuery = query(
-      collection(db, 'users'),
-      where('schoolId', '==', profile.schoolId),
-      where('role', '==', 'student')
-    );
-    const unsubscribeStudents = onSnapshot(studentsQuery, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(fetched);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'users');
     });
 
     const examsQuery = query(
@@ -141,23 +137,138 @@ export const SchoolStudentOnboarding: React.FC = () => {
       handleFirestoreError(error, OperationType.LIST, 'exams');
     });
 
-    const invitationsQuery = query(
-      collection(db, 'invitations'),
-      where('schoolId', '==', profile.schoolId)
-    );
-    const unsubscribeInvitations = onSnapshot(invitationsQuery, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setInvitations(fetched);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'invitations');
-    });
-
     return () => {
-      unsubscribeStudents();
       unsubscribeExams();
-      unsubscribeInvitations();
     };
   }, [profile?.schoolId]);
+
+  // Reset page cursors when search query or page size changes
+  useEffect(() => {
+    setStudentPage(1);
+    setLastVisibleDocs([]);
+  }, [searchQuery, studentPageSize]);
+
+  // Combined effect to fetch students page
+  useEffect(() => {
+    if (!profile?.schoolId) return;
+
+    const handler = setTimeout(() => {
+      const loadStudents = async () => {
+        setLoadingStudents(true);
+        try {
+          // 1. Get the total count of students matching search
+          let countQ = query(
+            collection(db, 'users'),
+            where('schoolId', '==', profile.schoolId),
+            where('role', '==', 'student')
+          );
+          if (searchQuery.trim()) {
+            const searchVal = searchQuery.trim();
+            countQ = query(
+              collection(db, 'users'),
+              where('schoolId', '==', profile.schoolId),
+              where('role', '==', 'student'),
+              where('name', '>=', searchVal),
+              where('name', '<=', searchVal + '\uf8ff')
+            );
+          }
+          const countSnap = await getCountFromServer(countQ);
+          setTotalStudentsCount(countSnap.data().count);
+
+          // 2. Fetch page of students
+          let studentQ = query(
+            collection(db, 'users'),
+            where('schoolId', '==', profile.schoolId),
+            where('role', '==', 'student'),
+            orderBy('name'),
+            limit(studentPageSize)
+          );
+
+          if (searchQuery.trim()) {
+            const searchVal = searchQuery.trim();
+            studentQ = query(
+              collection(db, 'users'),
+              where('schoolId', '==', profile.schoolId),
+              where('role', '==', 'student'),
+              where('name', '>=', searchVal),
+              where('name', '<=', searchVal + '\uf8ff'),
+              orderBy('name'),
+              limit(studentPageSize)
+            );
+          }
+
+          // Apply pagination cursor if applicable
+          if (studentPage > 1) {
+            const cursorDoc = lastVisibleDocs[studentPage - 2];
+            if (cursorDoc) {
+              studentQ = query(studentQ, startAfter(cursorDoc));
+            }
+          }
+
+          const snap = await getDocs(studentQ);
+          const fetched = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setStudents(fetched);
+
+          // Store cursor for current page to allow next page lookup
+          if (snap.docs.length > 0) {
+            const lastDoc = snap.docs[snap.docs.length - 1];
+            setLastVisibleDocs(prev => {
+              const updated = [...prev];
+              updated[studentPage - 1] = lastDoc;
+              return updated;
+            });
+          }
+        } catch (err) {
+          console.error("Error loading paginated students: ", err);
+          toast.error("Failed to load student directory page");
+        } finally {
+          setLoadingStudents(false);
+        }
+      };
+
+      loadStudents();
+    }, studentPage === 1 ? 400 : 0);
+
+    return () => clearTimeout(handler);
+  }, [profile?.schoolId, searchQuery, studentPage, studentPageSize]);
+
+  // Subscribe to ONLY the invitations of the students currently displayed on the page
+  useEffect(() => {
+    if (!profile?.schoolId || students.length === 0) {
+      setInvitations([]);
+      return;
+    }
+
+    const studentIds = students.map(s => s.uid || s.id);
+    const chunkSize = 30; // Firestore IN limit
+    const unsubscribes: (() => void)[] = [];
+
+    // Setup chunked subscriptions
+    for (let i = 0; i < studentIds.length; i += chunkSize) {
+      const chunk = studentIds.slice(i, i + chunkSize);
+      const qInv = query(
+        collection(db, 'invitations'),
+        where('schoolId', '==', profile.schoolId),
+        where('studentId', 'in', chunk)
+      );
+
+      const unsub = onSnapshot(qInv, (snap) => {
+        const fetched = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setInvitations(prev => {
+          // Remove old items for this specific chunk
+          const filteredPrev = prev.filter(p => !chunk.includes(p.studentId));
+          return [...filteredPrev, ...fetched];
+        });
+      }, (error) => {
+        console.error("Error reading invitations chunk:", error);
+      });
+      unsubscribes.push(unsub);
+    }
+
+    return () => {
+      unsubscribes.forEach(unsub => unsub());
+    };
+  }, [students, profile?.schoolId]);
 
   // Dynamic secure exam link subscription
   useEffect(() => {
@@ -700,15 +811,7 @@ export const SchoolStudentOnboarding: React.FC = () => {
     setTimeout(() => setCopiedToken(null), 2000);
   };
 
-  const [studentPage, setStudentPage] = useState(1);
-  const [studentPageSize, setStudentPageSize] = useState(10);
-
-  const filteredStudents = students.filter(s => {
-    const qLower = searchQuery.toLowerCase();
-    return s.name?.toLowerCase().includes(qLower) || 
-           s.email?.toLowerCase().includes(qLower) ||
-           s.rollNumber?.toLowerCase().includes(qLower);
-  });
+  const filteredStudents = students;
 
   return (
     <div className="space-y-10 px-1 md:px-0">
@@ -978,27 +1081,100 @@ export const SchoolStudentOnboarding: React.FC = () => {
             </div>
 
             {/* Global Target Exam Selection */}
-            <div className="bg-white/10 p-4 rounded-3xl border border-white/10 max-w-sm w-full">
+            <div className="bg-white/10 p-4 rounded-3xl border border-white/10 max-w-sm w-full relative">
               <Label className="text-[10px] font-black uppercase text-indigo-300 tracking-wider">Select Assessment Context</Label>
-              <Select value={selectedExamId} onValueChange={setSelectedExamId}>
-                <SelectTrigger className="w-full h-12 bg-white text-slate-950 rounded-xl font-black text-xs mt-2 border-2 border-indigo-400 hover:border-indigo-600 shadow-sm focus:ring-4 focus:ring-indigo-500/20 transition-all px-4 justify-between">
+              <div className="relative mt-2">
+                <button
+                  type="button"
+                  onClick={() => setExamDropdownOpen(!examDropdownOpen)}
+                  className="w-full h-12 bg-white text-slate-950 rounded-xl font-black text-xs border-2 border-indigo-400 hover:border-indigo-600 shadow-sm focus:ring-4 focus:ring-indigo-500/20 transition-all px-4 flex items-center justify-between cursor-pointer"
+                >
                   <span className="flex-1 text-left block truncate text-slate-900 font-bold">
                     {exams.find(e => e.id === selectedExamId) 
                       ? exams.find(e => e.id === selectedExamId)?.title 
                       : "Assessments Library"}
                   </span>
-                </SelectTrigger>
-                <SelectContent className="max-h-[220px] overflow-y-auto bg-white border-2 border-indigo-400 shadow-2xl rounded-2xl p-1.5 z-50">
-                  {exams.map(e => (
-                    <SelectItem key={e.id} value={e.id} className="font-black text-slate-900 hover:bg-indigo-50 text-xs cursor-pointer py-2 px-3 rounded-lg">
-                      {e.title} - ({e.subject})
-                    </SelectItem>
-                  ))}
-                  {exams.length === 0 && (
-                    <SelectItem value="none" disabled className="text-xs font-semibold text-slate-400 py-2 px-3">No active exams published yet</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
+                  <ChevronDown className="h-4 w-4 ml-2 text-indigo-600 shrink-0" />
+                </button>
+
+                {examDropdownOpen && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-[100]" 
+                      onClick={() => {
+                        setExamDropdownOpen(false);
+                        setExamSearchText('');
+                      }} 
+                    />
+                    <div className="absolute left-0 right-0 mt-1.5 bg-white border-2 border-indigo-400 shadow-2xl rounded-2xl p-3 z-[110] flex flex-col gap-2 max-h-[320px] overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                      <div className="relative flex items-center shrink-0">
+                        <Search className="absolute left-3 h-3.5 w-3.5 text-indigo-500" />
+                        <input
+                          type="text"
+                          value={examSearchText}
+                          onChange={(e) => setExamSearchText(e.target.value)}
+                          placeholder="Search assessments..."
+                          className="w-full h-9 pl-9 pr-3 bg-indigo-50/50 border-2 border-indigo-100 focus:border-indigo-400 focus:bg-white text-xs font-bold text-slate-800 rounded-lg outline-none transition-all"
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+                        {(() => {
+                          const queryFiltered = exams.filter(e => 
+                            (e.title || '').toLowerCase().includes(examSearchText.toLowerCase()) ||
+                            (e.subject || '').toLowerCase().includes(examSearchText.toLowerCase())
+                          );
+                          const sliced = queryFiltered.slice(0, 50);
+                          
+                          if (queryFiltered.length === 0) {
+                            return (
+                              <div className="text-center py-6 text-xs text-slate-400 font-bold">
+                                No matching assessments found
+                              </div>
+                            );
+                          }
+                          
+                          return (
+                            <>
+                              {sliced.map(e => {
+                                const isSelected = e.id === selectedExamId;
+                                return (
+                                  <button
+                                    key={e.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedExamId(e.id);
+                                      setExamDropdownOpen(false);
+                                      setExamSearchText('');
+                                    }}
+                                    className={`w-full text-left font-black text-xs cursor-pointer py-2 px-3 rounded-lg flex items-center justify-between transition-colors ${
+                                      isSelected 
+                                        ? 'bg-indigo-600 text-white hover:bg-indigo-700 font-black' 
+                                        : 'text-slate-900 hover:bg-indigo-50 font-black'
+                                    }`}
+                                  >
+                                    <span className="truncate pr-2">
+                                      {e.title} - <span className={`text-[10px] font-bold ${isSelected ? 'text-indigo-200' : 'text-slate-450'}`}>({e.subject})</span>
+                                    </span>
+                                    {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-white" />}
+                                  </button>
+                                );
+                              })}
+                              
+                              {queryFiltered.length > 50 && (
+                                <div className="text-[10px] text-center text-slate-500 font-bold pt-1.5 border-t border-slate-100 italic">
+                                  Showing top 50 matches of {queryFiltered.length}.
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </CardHeader>
@@ -1148,7 +1324,7 @@ export const SchoolStudentOnboarding: React.FC = () => {
           </div>
 
           <div className="divide-y divide-slate-100 max-h-[400px] overflow-y-auto">
-            {filteredStudents.slice((studentPage - 1) * studentPageSize, studentPage * studentPageSize).map((student) => {
+            {filteredStudents.map((student) => {
               const studentId = student.uid || student.id;
               const hasInvite = selectedExamId && selectedExamId !== 'none' && invitations.some(inv => inv.studentId === studentId && inv.examId === selectedExamId);
               return (
@@ -1242,7 +1418,7 @@ export const SchoolStudentOnboarding: React.FC = () => {
           </div>
 
           {/* Dynamic Onboarding Pagination Controls */}
-          {filteredStudents.length > 0 && (
+          {totalStudentsCount > 0 && (
             <div className="p-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/10">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-slate-400">Rows per page:</span>
@@ -1259,7 +1435,7 @@ export const SchoolStudentOnboarding: React.FC = () => {
                   <option value={50}>50</option>
                 </select>
                 <span className="text-xs font-bold text-slate-400 ml-4 font-mono">
-                  Showing {(studentPage - 1) * studentPageSize + 1}-{Math.min(studentPage * studentPageSize, filteredStudents.length)} of {filteredStudents.length}
+                  Showing {(studentPage - 1) * studentPageSize + 1}-{Math.min(studentPage * studentPageSize, totalStudentsCount)} of {totalStudentsCount}
                 </span>
               </div>
               
@@ -1267,23 +1443,23 @@ export const SchoolStudentOnboarding: React.FC = () => {
                 <Button 
                   variant="outline" 
                   size="sm" 
-                  disabled={studentPage === 1}
+                  disabled={studentPage === 1 || loadingStudents}
                   type="button"
                   onClick={() => setStudentPage(studentPage - 1)}
-                  className="h-9 px-4 rounded-xl border-slate-200 text-xs font-black uppercase tracking-wider bg-white cursor-pointer"
+                  className="h-9 px-4 rounded-xl border-slate-200 text-xs font-black uppercase tracking-wider bg-white cursor-pointer font-sans"
                 >
                   Previous
                 </Button>
                 <div className="h-9 w-9 bg-indigo-50 border border-indigo-100 rounded-xl flex items-center justify-center text-xs font-black text-indigo-700 select-none font-mono">
-                  {studentPage}
+                  {loadingStudents ? <Loader2 className="h-3 w-3 animate-spin text-indigo-500" /> : studentPage}
                 </div>
                 <Button 
                   type="button"
                   variant="outline" 
                   size="sm" 
-                  disabled={studentPage * studentPageSize >= filteredStudents.length}
+                  disabled={studentPage * studentPageSize >= totalStudentsCount || loadingStudents}
                   onClick={() => setStudentPage(studentPage + 1)}
-                  className="h-9 px-4 rounded-xl border-slate-200 text-xs font-black uppercase tracking-wider bg-white cursor-pointer"
+                  className="h-9 px-4 rounded-xl border-slate-200 text-xs font-black uppercase tracking-wider bg-white cursor-pointer font-sans"
                 >
                   Next
                 </Button>

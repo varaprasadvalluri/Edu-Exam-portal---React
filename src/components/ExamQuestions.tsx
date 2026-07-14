@@ -24,6 +24,9 @@ export const ExamQuestions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isDocxLoading, setIsDocxLoading] = useState(false);
+  const [questionPage, setQuestionPage] = useState(1);
+  const [questionPageSize, setQuestionPageSize] = useState(10);
   const [newQuestion, setNewQuestion] = useState<Question>({
     text: '',
     options: ['', '', '', ''],
@@ -87,6 +90,35 @@ export const ExamQuestions: React.FC = () => {
     for (const [key, val] of Object.entries(replacements)) {
       res = res.split(key).join(val);
     }
+
+    // Convert ^ followed by a digit or common power symbol to Unicode superscript
+    const superscriptMap: { [key: string]: string } = {
+      '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+      '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+      '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
+      'n': 'ⁿ', 'x': 'ˣ', 'y': 'ʸ', 'a': 'ᵃ', 'b': 'ᵇ',
+      'c': 'ᶜ', 'd': 'ᵈ', 'e': 'ᵉ', 'i': 'ⁱ', 'r': 'ʳ',
+      's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ', 'v': 'ᵛ', 'w': 'ʷ'
+    };
+
+    const subscriptMap: { [key: string]: string } = {
+      '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
+      '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+      '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎',
+      'n': 'ₙ', 'x': 'ₓ', 'y': 'ᵧ', 'a': 'ₐ', 'e': 'ₑ',
+      'h': 'ₕ', 'i': 'ᵢ', 'j': 'ⱼ', 'k': 'ₖ', 'l': 'ₗ',
+      'm': 'ₘ', 'o': 'ₒ', 'p': 'ₚ', 'r': 'ᵣ', 's': 'ₛ',
+      't': 'ₜ'
+    };
+
+    for (const [char, superChar] of Object.entries(superscriptMap)) {
+      res = res.split(`^${char}`).join(superChar);
+    }
+
+    for (const [char, subChar] of Object.entries(subscriptMap)) {
+      res = res.split(`_${char}`).join(subChar);
+    }
+
     return res;
   };
 
@@ -107,24 +139,28 @@ export const ExamQuestions: React.FC = () => {
   };
 
   const insertMathSymbol = (symbol: string) => {
+    let toInsert = symbol;
+    if (symbol === 'xʸ') toInsert = '^';
+    else if (symbol === 'xᵢ') toInsert = '_';
+
     if (!activeInputName) {
       setNewQuestion(prev => ({
         ...prev,
-        text: prev.text + symbol
+        text: replaceMathShortcuts(prev.text + toInsert)
       }));
       return;
     }
 
     if (activeInputName === 'text') {
-      setNewQuestion(prev => ({ ...prev, text: prev.text + symbol }));
+      setNewQuestion(prev => ({ ...prev, text: replaceMathShortcuts(prev.text + toInsert) }));
     } else if (activeInputName === 'explanation') {
-      setNewQuestion(prev => ({ ...prev, explanation: (prev.explanation || '') + symbol }));
+      setNewQuestion(prev => ({ ...prev, explanation: replaceMathShortcuts((prev.explanation || '') + toInsert) }));
     } else {
       const idx = parseInt(activeInputName.replace('opt', ''));
       if (!isNaN(idx) && idx >= 0 && idx < 4) {
         setNewQuestion(prev => {
           const updatedOpts = [...prev.options];
-          updatedOpts[idx] = updatedOpts[idx] + symbol;
+          updatedOpts[idx] = replaceMathShortcuts(updatedOpts[idx] + toInsert);
           return { ...prev, options: updatedOpts };
         });
       }
@@ -338,6 +374,59 @@ export const ExamQuestions: React.FC = () => {
     }
   };
 
+  const handleDocxFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !examId) return;
+
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (extension !== 'docx' && extension !== 'txt' && extension !== 'doc') {
+      toast.error("Unsupported file format. Please upload a .docx, .doc, or .txt document file.");
+      return;
+    }
+
+    setIsDocxLoading(true);
+    const toastId = toast.loading(`Uploading and parsing "${file.name}"...`);
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const result = reader.result as string;
+        const base64Data = result.split(',')[1];
+
+        try {
+          const response = await fetch(`/api/exams/${examId}/import-doc`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              base64Data,
+              fileName: file.name,
+              subject: exam?.subject || 'General'
+            })
+          });
+
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Parsing failed on the backend.');
+          }
+
+          toast.success(`Successfully imported ${data.count} questions one-by-one from "${file.name}"!`, { id: toastId });
+          e.target.value = '';
+        } catch (error: any) {
+          console.error("Document import error:", error);
+          toast.error(error.message || "Failed to process document. Please ensure format is correct.", { id: toastId });
+        } finally {
+          setIsDocxLoading(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      toast.error("File reading failed.", { id: toastId });
+      setIsDocxLoading(false);
+    }
+  };
+
   if (!canManage) return (
     <div className="flex flex-col items-center justify-center py-20 text-center animate-in fade-in duration-500">
       <div className="bg-red-50 p-6 rounded-full mb-6">
@@ -405,72 +494,130 @@ export const ExamQuestions: React.FC = () => {
       </div>
 
       <div className="space-y-4">
-        {questions.map((q, idx) => (
-          <Card key={q.id} className="border border-slate-100 shadow-md rounded-2xl overflow-hidden bg-white">
-            <CardHeader className="flex flex-row items-start justify-between bg-slate-50/50 pb-3 border-b border-slate-100">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="w-8 h-8 rounded-lg bg-slate-950 text-white flex items-center justify-center font-bold text-xs">{idx + 1}</span>
-                  <CardTitle className="text-base font-bold text-slate-900">Question {idx + 1}</CardTitle>
-                </div>
-                <div className="flex items-center gap-2 pt-1.5 flex-wrap">
-                  <span className="px-2.5 py-0.5 bg-indigo-50 border border-indigo-150 text-[10px] uppercase font-black tracking-wider text-indigo-600 rounded-md">
-                    Subject: {q.subject || exam.subject || 'General'}
-                  </span>
-                  <span className="px-2.5 py-0.5 bg-slate-100 text-[10px] uppercase font-black tracking-wider text-slate-600 rounded-md">
-                    Type: {q.type || 'single'}
-                  </span>
-                  <span className="px-2.5 py-0.5 bg-emerald-50 text-[10px] uppercase font-black tracking-wider text-emerald-600 rounded-md font-mono">
-                    +{q.marks} Mark(s)
-                  </span>
-                </div>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => handleDeleteQuestion(q.id!)} className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 h-8 w-8 rounded-lg">
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </CardHeader>
-            <CardContent className="p-6 space-y-4">
-              <p className="font-medium text-slate-800 text-lg leading-relaxed">{q.text}</p>
-              
-              {q.type === 'numerical' ? (
-                <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl space-y-1">
-                  <p className="text-xs uppercase tracking-widest font-black text-emerald-600">Correct Value Answer</p>
-                  <p className="text-xl font-mono font-black text-emerald-950">{q.numericalAnswer}</p>
-                </div>
-              ) : q.type === 'math' ? (
-                <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl space-y-1">
-                  <p className="text-xs uppercase tracking-widest font-black text-indigo-600">Expected Mathematical Formula (LaTeX)</p>
-                  <div className="p-3 bg-white rounded-lg border border-indigo-100 mt-2 flex items-center justify-center">
-                    <MathRenderer math={q.numericalAnswer || ''} block={true} />
+        {questions.slice((questionPage - 1) * questionPageSize, questionPage * questionPageSize).map((q, localIdx) => {
+          const globalIdx = (questionPage - 1) * questionPageSize + localIdx;
+          return (
+            <Card key={q.id} className="border border-slate-100 shadow-md rounded-2xl overflow-hidden bg-white">
+              <CardHeader className="flex flex-row items-start justify-between bg-slate-50/50 pb-3 border-b border-slate-100">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="w-8 h-8 rounded-lg bg-slate-950 text-white flex items-center justify-center font-bold text-xs">{globalIdx + 1}</span>
+                    <CardTitle className="text-base font-bold text-slate-900">Question {globalIdx + 1}</CardTitle>
                   </div>
-                  <p className="text-[10px] text-slate-500 font-mono mt-1">Raw Code: <span className="font-bold">{q.numericalAnswer}</span></p>
+                  <div className="flex items-center gap-2 pt-1.5 flex-wrap">
+                    <span className="px-2.5 py-0.5 bg-indigo-50 border border-indigo-150 text-[10px] uppercase font-black tracking-wider text-indigo-600 rounded-md">
+                      Subject: {q.subject || exam?.subject || 'General'}
+                    </span>
+                    <span className="px-2.5 py-0.5 bg-slate-100 text-[10px] uppercase font-black tracking-wider text-slate-600 rounded-md">
+                      Type: {q.type || 'single'}
+                    </span>
+                    <span className="px-2.5 py-0.5 bg-emerald-50 text-[10px] uppercase font-black tracking-wider text-emerald-600 rounded-md font-mono">
+                      +{q.marks} Mark(s)
+                    </span>
+                  </div>
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {(q.options || []).map((opt, i) => (
-                    <div key={i} className={`p-4 rounded-xl border flex items-center justify-between ${i === q.correctAnswerIndex ? 'bg-emerald-50/50 border-emerald-300 text-emerald-950 font-semibold' : 'bg-slate-50 border-slate-100 text-slate-600'}`}>
-                      <div className="flex items-center gap-3">
-                        <span className={`w-6 h-6 rounded-md font-mono text-xs font-black flex items-center justify-center ${i === q.correctAnswerIndex ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500'}`}>
-                          {String.fromCharCode(65 + i)}
-                        </span>
-                        <span>{opt}</span>
-                      </div>
-                      {i === q.correctAnswerIndex && <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                <Button variant="ghost" size="icon" onClick={() => handleDeleteQuestion(q.id!)} className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 h-8 w-8 rounded-lg">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </CardHeader>
+              <CardContent className="p-6 space-y-4">
+                <p className="font-medium text-slate-800 text-lg leading-relaxed">{q.text}</p>
+                
+                {q.type === 'numerical' ? (
+                  <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl space-y-1">
+                    <p className="text-xs uppercase tracking-widest font-black text-emerald-600">Correct Value Answer</p>
+                    <p className="text-xl font-mono font-black text-emerald-950">{q.numericalAnswer}</p>
+                  </div>
+                ) : q.type === 'math' ? (
+                  <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl space-y-1">
+                    <p className="text-xs uppercase tracking-widest font-black text-indigo-600">Expected Mathematical Formula (LaTeX)</p>
+                    <div className="p-3 bg-white rounded-lg border border-indigo-100 mt-2 flex items-center justify-center">
+                      <MathRenderer math={q.numericalAnswer || ''} block={true} />
                     </div>
-                  ))}
-                </div>
-              )}
+                    <p className="text-[10px] text-slate-500 font-mono mt-1">Raw Code: <span className="font-bold">{q.numericalAnswer}</span></p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {(q.options || []).map((opt, i) => (
+                      <div key={i} className={`p-4 rounded-xl border flex items-center justify-between ${i === q.correctAnswerIndex ? 'bg-emerald-50/50 border-emerald-300 text-emerald-950 font-semibold' : 'bg-slate-50 border-slate-100 text-slate-600'}`}>
+                        <div className="flex items-center gap-3">
+                          <span className={`w-6 h-6 rounded-md font-mono text-xs font-black flex items-center justify-center ${i === q.correctAnswerIndex ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                            {String.fromCharCode(65 + i)}
+                          </span>
+                          <span>{opt}</span>
+                        </div>
+                        {i === q.correctAnswerIndex && <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
-              {q.explanation && (
-                <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-xs space-y-1">
-                  <p className="font-black uppercase tracking-widest text-indigo-600">Interactive Solution / Step-by-Step Explanation</p>
-                  <p className="text-slate-700 leading-relaxed italic">{q.explanation}</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
+                {q.explanation && (
+                  <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-xs space-y-1">
+                    <p className="font-black uppercase tracking-widest text-indigo-600">Interactive Solution / Step-by-Step Explanation</p>
+                    <p className="text-slate-700 leading-relaxed italic">{q.explanation}</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
+
+      {/* Questions Pagination Controls */}
+      {questions.length > 0 && (
+        <div className="p-4 border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/50">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-400">Questions per page:</span>
+            <select 
+              value={questionPageSize} 
+              onChange={e => {
+                setQuestionPageSize(parseInt(e.target.value));
+                setQuestionPage(1);
+              }}
+              className="p-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none cursor-pointer"
+            >
+              {[5, 10, 20, 50].map(size => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+            <span className="text-xs font-medium text-slate-400 ml-4">
+              Showing {Math.min(questions.length, (questionPage - 1) * questionPageSize + 1)} - {Math.min(questions.length, questionPage * questionPageSize)} of {questions.length} Questions
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setQuestionPage(p => Math.max(1, p - 1))}
+              disabled={questionPage === 1}
+              className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs"
+            >
+              Previous
+            </Button>
+            {Array.from({ length: Math.ceil(questions.length / questionPageSize) }).map((_, idx) => (
+              <Button
+                key={idx}
+                variant={questionPage === idx + 1 ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setQuestionPage(idx + 1)}
+                className={`h-9 w-9 p-0 rounded-lg text-xs font-bold ${questionPage === idx + 1 ? 'bg-indigo-650 text-white border-indigo-650' : 'border-slate-200 text-slate-600'}`}
+              >
+                {idx + 1}
+              </Button>
+            ))}
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setQuestionPage(p => Math.min(Math.ceil(questions.length / questionPageSize), p + 1))}
+              disabled={questionPage === Math.ceil(questions.length / questionPageSize) || questions.length === 0}
+              className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="pt-6 border-t border-slate-100">
         {isAdding ? (
@@ -538,45 +685,108 @@ export const ExamQuestions: React.FC = () => {
                   </div>
                   
                   {/* Virtual Symbols Keyboard */}
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { sym: 'π', label: 'pi' },
-                      { sym: 'θ', label: 'theta' },
-                      { sym: 'α', label: 'alpha' },
-                      { sym: 'β', label: 'beta' },
-                      { sym: 'γ', label: 'gamma' },
-                      { sym: 'Δ', label: 'delta' },
-                      { sym: 'λ', label: 'lambda' },
-                      { sym: 'φ', label: 'phi' },
-                      { sym: 'μ', label: 'mu' },
-                      { sym: 'ω', label: 'omega' },
-                      { sym: '√', label: 'sqrt' },
-                      { sym: '∫', label: 'integral' },
-                      { sym: '∑', label: 'sum' },
-                      { sym: '∞', label: 'infinity' },
-                      { sym: '≈', label: 'approx' },
-                      { sym: '≠', label: 'not=' },
-                      { sym: '≤', label: 'le' },
-                      { sym: '≥', label: 'ge' },
-                      { sym: '±', label: 'pm' },
-                      { sym: '×', label: 'times' },
-                      { sym: '÷', label: 'div' },
-                      { sym: '²', label: 'squared' },
-                      { sym: '³', label: 'cubed' },
-                      { sym: '^', label: 'power' },
-                      { sym: '_', label: 'sub' },
-                      { sym: '→', label: 'to' }
-                    ].map((item) => (
-                      <button
-                        key={item.sym}
-                        type="button"
-                        onClick={() => insertMathSymbol(item.sym)}
-                        className="h-10 w-10 text-sm font-bold bg-white hover:bg-slate-900 hover:text-white text-slate-800 border border-slate-200 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm active:translate-y-0.5 hover:scale-105"
-                        title={`Insert ${item.sym} (Shortkey: ${item.label})`}
-                      >
-                        {item.sym}
-                      </button>
-                    ))}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { sym: 'π', label: 'pi' },
+                        { sym: 'θ', label: 'theta' },
+                        { sym: 'α', label: 'alpha' },
+                        { sym: 'β', label: 'beta' },
+                        { sym: 'γ', label: 'gamma' },
+                        { sym: 'Δ', label: 'delta' },
+                        { sym: 'λ', label: 'lambda' },
+                        { sym: 'φ', label: 'phi' },
+                        { sym: 'μ', label: 'mu' },
+                        { sym: 'ω', label: 'omega' },
+                        { sym: '√', label: 'sqrt' },
+                        { sym: '∫', label: 'integral' },
+                        { sym: '∑', label: 'sum' },
+                        { sym: '∞', label: 'infinity' },
+                        { sym: '≈', label: 'approx' },
+                        { sym: '≠', label: 'not=' },
+                        { sym: '≤', label: 'le' },
+                        { sym: '≥', label: 'ge' },
+                        { sym: '±', label: 'pm' },
+                        { sym: '×', label: 'times' },
+                        { sym: '÷', label: 'div' },
+                        { sym: '→', label: 'to' }
+                      ].map((item) => (
+                        <button
+                          key={item.sym}
+                          type="button"
+                          onClick={() => insertMathSymbol(item.sym)}
+                          className="h-10 px-3 text-sm font-bold bg-white hover:bg-slate-900 hover:text-white text-slate-800 border border-slate-200 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm active:translate-y-0.5 hover:scale-105"
+                          title={`Insert ${item.sym} (Shortkey: ${item.label})`}
+                        >
+                          {item.sym}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="bg-slate-100/60 p-3 rounded-xl space-y-2">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">Powers & Superscripts (POW)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[
+                          { sym: 'xʸ', label: 'inserts ^ for powers' },
+                          { sym: '⁰', label: 'superscript 0' },
+                          { sym: '¹', label: 'superscript 1' },
+                          { sym: '²', label: 'superscript 2' },
+                          { sym: '³', label: 'superscript 3' },
+                          { sym: '⁴', label: 'superscript 4' },
+                          { sym: '⁵', label: 'superscript 5' },
+                          { sym: '⁶', label: 'superscript 6' },
+                          { sym: '⁷', label: 'superscript 7' },
+                          { sym: '⁸', label: 'superscript 8' },
+                          { sym: '⁹', label: 'superscript 9' },
+                          { sym: 'ⁿ', label: 'superscript n' },
+                          { sym: 'ˣ', label: 'superscript x' },
+                          { sym: 'ʸ', label: 'superscript y' },
+                          { sym: '⁺', label: 'superscript plus' },
+                          { sym: '⁻', label: 'superscript minus' }
+                        ].map((item) => (
+                          <button
+                            key={item.sym}
+                            type="button"
+                            onClick={() => insertMathSymbol(item.sym)}
+                            className="h-9 px-2.5 text-xs font-black bg-white hover:bg-indigo-600 hover:text-white text-indigo-950 border border-indigo-100 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-xs active:translate-y-0.5 hover:scale-105"
+                            title={item.label}
+                          >
+                            {item.sym}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-100/60 p-3 rounded-xl space-y-2">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">Subscripts (SUB)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[
+                          { sym: 'xᵢ', label: 'inserts _ for subscripts' },
+                          { sym: '₀', label: 'subscript 0' },
+                          { sym: '₁', label: 'subscript 1' },
+                          { sym: '₂', label: 'subscript 2' },
+                          { sym: '₃', label: 'subscript 3' },
+                          { sym: '₄', label: 'subscript 4' },
+                          { sym: '₅', label: 'subscript 5' },
+                          { sym: '₆', label: 'subscript 6' },
+                          { sym: 'ₙ', label: 'subscript n' },
+                          { sym: 'ₓ', label: 'subscript x' },
+                          { sym: 'ᵢ', label: 'subscript i' },
+                          { sym: '₊', label: 'subscript plus' },
+                          { sym: '₋', label: 'subscript minus' }
+                        ].map((item) => (
+                          <button
+                            key={item.sym}
+                            type="button"
+                            onClick={() => insertMathSymbol(item.sym)}
+                            className="h-9 px-2.5 text-xs font-black bg-white hover:bg-slate-700 hover:text-white text-slate-700 border border-slate-200 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-xs active:translate-y-0.5 hover:scale-105"
+                            title={item.label}
+                          >
+                            {item.sym}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
 
                   {/* Interactive conversion guidelines */}
@@ -752,6 +962,33 @@ export const ExamQuestions: React.FC = () => {
                    <FileUp size={100} />
                 </div>
                 <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/20 to-transparent opacity-0 group-hover/ai:opacity-100 transition-opacity" />
+             </Button>
+          </div>
+
+          <div className="relative flex-grow group">
+             <input 
+                type="file" 
+                accept=".docx,.doc,.txt" 
+                className="hidden" 
+                id="doc-import-file"
+                onChange={handleDocxFileSelect}
+                disabled={isDocxLoading}
+             />
+             <Button 
+                onClick={() => document.getElementById('doc-import-file')?.click()}
+                disabled={isDocxLoading}
+                className="w-full py-12 bg-indigo-950 border-0 text-white rounded-[40px] flex flex-col items-center justify-center gap-3 shadow-2xl shadow-slate-200 transition-all relative overflow-hidden group/doc"
+             >
+                <div className="flex flex-col items-center gap-3 relative z-10 text-center">
+                   <div className="h-12 w-12 rounded-2xl bg-indigo-500 flex items-center justify-center text-white shadow-xl shadow-indigo-900/50 group-hover/doc:scale-110 transition-transform mx-auto">
+                      {isDocxLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : <FileUp className="h-6 w-6" />}
+                   </div>
+                   <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover/doc:text-white transition-colors block">{isDocxLoading ? 'Parsing Document...' : 'Word Doc / TXT Importer'}</span>
+                </div>
+                <div className="absolute -bottom-4 -right-4 text-white/5 rotate-12 transition-transform group-hover/doc:rotate-0 pointer-events-none">
+                   <FileUp size={100} />
+                </div>
+                <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/20 to-transparent opacity-0 group-hover/doc:opacity-100 transition-opacity" />
              </Button>
           </div>
         </div>

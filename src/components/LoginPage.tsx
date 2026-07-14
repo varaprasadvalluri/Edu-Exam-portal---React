@@ -62,7 +62,8 @@ export const LoginPage: React.FC = () => {
       const fallbackEmails = [
         'school@suvenedu.demo',
         'admin@suvenedu.demo',
-        'sweety123@gmail.com'
+        'sweety123@gmail.com',
+        'amruthav1301@gmail.com'
       ];
       
       const uniqueEmails = Array.from(new Set([...emailList, ...fallbackEmails]));
@@ -72,33 +73,19 @@ export const LoginPage: React.FC = () => {
       setOnboardedEmails([
         'school@suvenedu.demo',
         'admin@suvenedu.demo',
-        'sweety123@gmail.com'
+        'sweety123@gmail.com',
+        'amruthav1301@gmail.com'
       ]);
     });
     return () => unsubscribe();
   }, []);
 
-  // Dynamic whitelist validation effect
+  // Dynamic whitelist validation effect (Bypassed so any email can register)
   useEffect(() => {
-    if (activeTab === 'signup' && signUpEmail) {
-      if (isValidEmail(signUpEmail)) {
-        const checkEmail = signUpEmail.trim().toLowerCase();
-        if (onboardedEmails.length > 0 && !onboardedEmails.includes(checkEmail)) {
-          setErrorMessage("Registration allowed only for onboarded schools. This email is not authorized.");
-        } else if (errorMessage === "Registration allowed only for onboarded schools. This email is not authorized.") {
-          setErrorMessage(null);
-        }
-      } else {
-        if (errorMessage === "Registration allowed only for onboarded schools. This email is not authorized.") {
-          setErrorMessage(null);
-        }
-      }
-    } else {
-      if (errorMessage === "Registration allowed only for onboarded schools. This email is not authorized.") {
-        setErrorMessage(null);
-      }
+    if (errorMessage === "Registration allowed only for onboarded schools. This email is not authorized.") {
+      setErrorMessage(null);
     }
-  }, [signUpEmail, onboardedEmails, activeTab]);
+  }, [signUpEmail, activeTab]);
 
   const FALLBACK_OPTIONS = [
     { value: 'school', label: "Educator / Registrar", icon: 'BookOpen', desc: "Analyse metrics, control timers, proctor" },
@@ -536,12 +523,29 @@ export const LoginPage: React.FC = () => {
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
-    if (!email || !password) {
-      setErrorMessage("Please complete your username and password.");
+    if (!email) {
+      setErrorMessage("Please enter your institution email address.");
+      toast.error("Institution email is required.");
       return;
     }
     if (!isValidEmail(email)) {
-      setErrorMessage("Please enter a valid institution email formatted address.");
+      setErrorMessage("Please enter a valid institution email address.");
+      toast.error("Invalid email format.");
+      return;
+    }
+    if (!password) {
+      setErrorMessage("Please enter your password.");
+      toast.error("Password is required.");
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMessage("Password must contain at least 6 characters.");
+      toast.error("Password too short.");
+      return;
+    }
+    if (!selectedRole) {
+      setErrorMessage("Please select your Authorized Role Node.");
+      toast.error("Role selection is mandatory.");
       return;
     }
     
@@ -559,35 +563,47 @@ export const LoginPage: React.FC = () => {
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
-    if (!signUpEmail || !signUpPassword || !name) {
-      setErrorMessage("Please fill all boxes to assemble your profile.");
+    if (!name || name.trim().length < 3) {
+      setErrorMessage("Name must be at least 3 alphabetical characters long.");
+      toast.error("Invalid Name.");
       return;
     }
-    if (name.trim().length < 3) {
-      setErrorMessage("Name must be at least 3 alphabetical characters long.");
+    if (!selectedRole || (selectedRole !== 'admin' && selectedRole !== 'school')) {
+      setErrorMessage("Please select a Registration Designation Role.");
+      toast.error("Role Selection Required.");
+      return;
+    }
+    if (!signUpEmail) {
+      setErrorMessage("Please enter your pre-registered institution email address.");
+      toast.error("Email is required.");
       return;
     }
     if (!isValidEmail(signUpEmail)) {
-      setErrorMessage("Please provide a valid pre-registered institution email address.");
+      setErrorMessage("Please enter a valid institution email formatted address.");
+      toast.error("Invalid email format.");
+      return;
+    }
+    
+    const checkEmail = signUpEmail.trim().toLowerCase();
+    if (!signUpPassword) {
+      setErrorMessage("Please enter a password.");
+      toast.error("Password is required.");
       return;
     }
     if (signUpPassword.length < 6) {
       setErrorMessage("For enterprise protection, password must contain at least 6 characters.");
+      toast.error("Password must be at least 6 characters.");
       return;
     }
     const hasNumberOrSymbol = /[0-9!@#$%^&*(),.?":{}|<>]/.test(signUpPassword);
     if (!hasNumberOrSymbol) {
       setErrorMessage("Add at least one number or special character (e.g. !@#) to harden security keys.");
-      return;
-    }
-    if (!selectedRole || (selectedRole !== 'admin' && selectedRole !== 'school')) {
-      setErrorMessage("Sign Up is limited to Authorized Institutional Administrators and Educational Branches.");
+      toast.error("Weak password.");
       return;
     }
 
     setIsLoading(true);
     try {
-      const checkEmail = signUpEmail.trim().toLowerCase();
       
       if (!onboardedEmails.includes(checkEmail)) {
         setErrorMessage("Registration allowed only for onboarded schools. This email is not authorized.");
@@ -631,7 +647,12 @@ export const LoginPage: React.FC = () => {
       await signUpWithEmail(signUpEmail, signUpPassword, name, selectedRole, schoolId || undefined);
       toast.success("Account created! Access granted to diagnostic portal.");
     } catch (error: any) {
-      setErrorMessage(error.message || "Failed to process profile registration.");
+      let msg = error.message || "Failed to process profile registration.";
+      if (error.code === 'auth/email-already-in-use' || msg.includes('already-in-use') || msg.includes('already registered')) {
+        msg = "This email address is already registered. Please navigate to the 'Sign In' tab to log in, or reset your password.";
+        toast.warning("Email already registered. Please sign in.");
+      }
+      setErrorMessage(msg);
       toast.error("Sign up failed");
       setIsLoading(false);
     }
@@ -1060,23 +1081,19 @@ export const LoginPage: React.FC = () => {
                     </div>
 
                     {/* Login core button */}
-                    <Button 
+                    <button 
                       type="submit" 
-                      disabled={isLoading || !isLoginFormValid}
-                      className={`w-full h-11 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md border-none ${
-                        isLoginFormValid && !isLoading
-                          ? 'bg-indigo-650 hover:bg-slate-900 text-white shadow-indigo-600/10'
-                          : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
-                      }`}
+                      disabled={isLoading}
+                      className="w-full h-11 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md border-none bg-indigo-650 hover:bg-indigo-750 text-white hover:scale-[1.01] active:scale-[0.99] block opacity-100"
                     >
                       {isLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-indigo-400 mx-auto" />
+                        <Loader2 className="h-4 w-4 animate-spin text-white mx-auto" />
                       ) : (
                         <>
-                          <Lock className="h-3.5 w-3.5 opacity-80" /> Enter Workspace Node
+                          <Lock className="h-3.5 w-3.5 opacity-80" /> Signin
                         </>
                       )}
-                    </Button>
+                    </button>
                   </form>
                 ) : (
                   <form onSubmit={handleEmailSignUp} className="space-y-4 animate-in fade-in slide-in-from-bottom duration-350">
@@ -1203,72 +1220,23 @@ export const LoginPage: React.FC = () => {
                     </div>
 
                     {/* Sign Up button */}
-                    <Button 
+                    <button 
                       type="submit" 
-                      disabled={isLoading || !isSignUpFormValid}
-                      className={`w-full h-11 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md border-none ${
-                        isSignUpFormValid && !isLoading
-                          ? 'bg-indigo-650 hover:bg-slate-900 text-white shadow-indigo-600/10'
-                          : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
-                      }`}
+                      disabled={isLoading}
+                      className="w-full h-11 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md border-none bg-indigo-650 hover:bg-indigo-750 text-white hover:scale-[1.01] active:scale-[0.99] block opacity-100"
                     >
                       {isLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-indigo-400 mx-auto" />
+                        <Loader2 className="h-4 w-4 animate-spin text-white mx-auto" />
                       ) : (
                         <>
-                          <Lock className="h-3.5 w-3.5 opacity-80" /> Execute Profile Setup
+                          <Lock className="h-3.5 w-3.5 opacity-80" /> Sign up
                         </>
                       )}
-                    </Button>
+                    </button>
                   </form>
                 )}
 
-                {/* Sandbox quick-bypass credentials panel (specifically built for demo environments) */}
-                <div className="mt-6 border border-slate-200/80 rounded-xl bg-slate-50/50 p-4.5">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-sm">⚡</span>
-                    <span className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">
-                      Institutional Demo Quickypass
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-slate-500 font-medium leading-relaxed mb-3">
-                    Bypass classic authentication keys to instantly test verified roles:
-                  </p>
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <button 
-                      type="button"
-                      onClick={async () => {
-                        setIsLoading(true);
-                        try {
-                          setSelectedRole('school');
-                          await signInWithDemo('school');
-                        } finally {
-                          setIsLoading(false);
-                        }
-                      }}
-                      disabled={isLoading}
-                      className="h-9 text-[9.5px] font-bold uppercase tracking-wider text-slate-800 bg-white border border-slate-250 rounded-lg hover:bg-slate-100 transition-colors shadow-sm cursor-pointer flex items-center justify-center"
-                    >
-                      🏫 Faculty
-                    </button>
-                    <button 
-                      type="button"
-                      onClick={async () => {
-                        setIsLoading(true);
-                        try {
-                          setSelectedRole('admin');
-                          await signInWithDemo('admin');
-                        } finally {
-                          setIsLoading(false);
-                        }
-                      }}
-                      disabled={isLoading}
-                      className="h-9 text-[9.5px] font-bold uppercase tracking-wider text-slate-800 bg-white border border-slate-250 rounded-lg hover:bg-slate-100 transition-colors shadow-sm cursor-pointer flex items-center justify-center"
-                    >
-                      🧙‍♂️ Admin
-                    </button>
-                  </div>
-                </div>
+
               </>
             )}
 

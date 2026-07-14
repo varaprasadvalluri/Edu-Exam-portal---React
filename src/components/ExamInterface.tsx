@@ -795,7 +795,7 @@ const ExamInterfaceCore: React.FC = () => {
       {/* Control Navigation Header */}
       <div className="flex items-center justify-between sticky top-4 z-30 bg-white/85 backdrop-blur-xl py-4 px-6 rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100">
         <div>
-          <span className="text-xs font-black uppercase tracking-widest text-indigo-600">Narayana E-Exam Platform</span>
+          <span className="text-xs font-black uppercase tracking-widest text-indigo-600">E-Exam Platform</span>
           <h1 className="text-xl font-display font-black text-slate-950 tracking-tight leading-none mt-1">{exam.title}</h1>
         </div>
         <div className="flex items-center gap-4">
@@ -807,6 +807,32 @@ const ExamInterfaceCore: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* Answered Questions Progress Bar */}
+      <Card id="exam-answered-progress-bar" className="border border-slate-100 rounded-2xl p-5 bg-white space-y-3 shadow-sm">
+        <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-500">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Answered Questions Progress</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-800 font-extrabold">{counts.answered + counts.answeredMarkedReview}</span>
+            <span>of</span>
+            <span className="text-slate-800 font-extrabold">{questions.length} Answered</span>
+            <span className="bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-black border border-emerald-100 ml-2">
+              {Math.round(((counts.answered + counts.answeredMarkedReview) / questions.length) * 100)}% Complete
+            </span>
+          </div>
+        </div>
+        <div className="relative h-3 bg-slate-100 rounded-full overflow-hidden">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${((counts.answered + counts.answeredMarkedReview) / questions.length) * 100}%` }}
+            transition={{ type: "spring", stiffness: 60, damping: 15 }}
+            className="absolute left-0 top-0 h-full bg-gradient-to-r from-emerald-500 to-teal-600 rounded-full"
+          />
+        </div>
+      </Card>
 
       {/* Narayana Segment Tabs for Subjects */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-none">

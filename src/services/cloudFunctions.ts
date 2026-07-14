@@ -226,7 +226,7 @@ export async function executeBackgroundBulkPdfGeneration(
       await new Promise(resolve => setTimeout(resolve, 300)); 
       
       const simulatedPdfBuffer = new TextEncoder().encode(
-        `%PDF-1.4 %Narayana E-Portal Secure Verified Report Card\n` +
+        `%PDF-1.4 % E-Portal Secure Verified Report Card\n` +
         `Student: ${student.studentName} | Roll: ${student.studentId}\n` +
         `Exam: ${examId} | Score: ${student.score} | Accuracy: ${student.accuracy || 0}%\n` +
         `Cryptographic Integrity Hash: ${btoa(student.studentId + student.score).substring(0, 16)}`

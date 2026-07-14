@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, onSnapshot, doc, getDoc } from 'firebase/firestore';
+import { collection, query, where, doc, getDoc, getDocs, limit, orderBy, getCountFromServer } from 'firebase/firestore';
 import { useAuth } from '../lib/AuthContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AdminExams } from './AdminExams';
@@ -50,85 +50,100 @@ export const SchoolDashboard: React.FC = () => {
   const [students, setStudents] = useState<any[]>([]);
   const [attempts, setAttempts] = useState<any[]>([]);
   const [invitations, setInvitations] = useState<any[]>([]);
+  const [studentsCount, setStudentsCount] = useState<number>(0);
+  const [attemptsCount, setAttemptsCount] = useState<number>(0);
+  const [invitationsCount, setInvitationsCount] = useState<number>(0);
   const [exams, setExams] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Dynamic real-time data subscription
+  // Dynamic scale-optimized data fetching (handles millions of transactions)
   useEffect(() => {
     if (!profile?.schoolId) return;
 
     setLoading(true);
 
-    // 1. Fetch School Document Info
-    const schoolRef = doc(db, 'schools', profile.schoolId);
-    getDoc(schoolRef).then((snap) => {
-      if (snap.exists()) {
-        setSchoolInfo({ id: snap.id, ...snap.data() } as SchoolProfile);
-      } else {
-        setSchoolInfo({ id: profile.schoolId!, name: 'Authorized Institution Hub' });
+    const loadData = async () => {
+      try {
+        const schoolId = profile.schoolId;
+
+        // 1. Fetch School Document Info
+        const schoolRef = doc(db, 'schools', schoolId);
+        const schoolSnap = await getDoc(schoolRef);
+        if (schoolSnap.exists()) {
+          setSchoolInfo({ id: schoolSnap.id, ...schoolSnap.data() } as SchoolProfile);
+        } else {
+          setSchoolInfo({ id: schoolId, name: 'Authorized Institution Hub' });
+        }
+
+        // 2. Fetch server-side counts
+        const studentsCountQuery = query(
+          collection(db, 'users'),
+          where('schoolId', '==', schoolId),
+          where('role', '==', 'student')
+        );
+        const studentCountSnap = await getCountFromServer(studentsCountQuery);
+        setStudentsCount(studentCountSnap.data().count);
+
+        const invitesCountQuery = query(
+          collection(db, 'invitations'),
+          where('schoolId', '==', schoolId)
+        );
+        const invitesCountSnap = await getCountFromServer(invitesCountQuery);
+        setInvitationsCount(invitesCountSnap.data().count);
+
+        const attemptsCountQuery = query(
+          collection(db, 'attempts'),
+          where('schoolId', '==', schoolId)
+        );
+        const attemptsCountSnap = await getCountFromServer(attemptsCountQuery);
+        setAttemptsCount(attemptsCountSnap.data().count);
+
+        // 3. Fetch statistical samples (up to 200 records each for rapid dashboard trend calculation)
+        const studentsSampleQuery = query(
+          collection(db, 'users'),
+          where('schoolId', '==', schoolId),
+          where('role', '==', 'student'),
+          limit(200)
+        );
+        const studentsSnap = await getDocs(studentsSampleQuery);
+        setStudents(studentsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+        const invitesSampleQuery = query(
+          collection(db, 'invitations'),
+          where('schoolId', '==', schoolId),
+          limit(200)
+        );
+        const invitesSnap = await getDocs(invitesSampleQuery);
+        setInvitations(invitesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+        const attemptsSampleQuery = query(
+          collection(db, 'attempts'),
+          where('schoolId', '==', schoolId),
+          limit(200)
+        );
+        const attemptsSnap = await getDocs(attemptsSampleQuery);
+        setAttempts(attemptsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+        const examsQuery = query(collection(db, 'exams'), limit(150));
+        const examsSnap = await getDocs(examsQuery);
+        setExams(examsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+      } catch (error) {
+        console.error("Error loading school dashboard stats:", error);
+        toast.error("Failed to compile institutional metrics");
+      } finally {
+        setLoading(false);
       }
-    });
-
-    // 2. Fetch School's onboarded Students
-    const studentsQuery = query(
-      collection(db, 'users'),
-      where('schoolId', '==', profile.schoolId),
-      where('role', '==', 'student')
-    );
-    const unsubscribeStudents = onSnapshot(studentsQuery, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(fetched);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'users');
-    });
-
-    // 3. Fetch School invitations dispatch telemetry 
-    const invitesQuery = query(
-      collection(db, 'invitations'),
-      where('schoolId', '==', profile.schoolId)
-    );
-    const unsubscribeInvites = onSnapshot(invitesQuery, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setInvitations(fetched);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'invitations');
-    });
-
-    // 4. Fetch School's students exam attempts (live completion status)
-    const attemptsQuery = query(
-      collection(db, 'attempts'),
-      where('schoolId', '==', profile.schoolId)
-    );
-    const unsubscribeAttempts = onSnapshot(attemptsQuery, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setAttempts(fetched);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'attempts');
-    });
-
-    // 5. Fetch Exams Collection to calculate subject performance mapping
-    const examsQuery = query(collection(db, 'exams'));
-    const unsubscribeExams = onSnapshot(examsQuery, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setExams(fetched);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'exams');
-    });
-
-    return () => {
-      unsubscribeStudents();
-      unsubscribeInvites();
-      unsubscribeAttempts();
-      unsubscribeExams();
     };
+
+    loadData();
   }, [profile?.schoolId]);
 
   // Dynamic calculations for school intelligence base
   const intelligenceMetrics = useMemo(() => {
-    const totalStudentsCount = students.length;
+    const totalStudentsCount = studentsCount;
     const completedAttempts = attempts.filter(a => a.status === 'completed');
-    const totalAttemptsCount = attempts.length;
+    const totalAttemptsCount = attemptsCount;
     const pendingInvitesCount = invitations.filter(i => i.status === 'sent').length;
     const usedInvitesCount = invitations.filter(i => i.status === 'used').length;
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, orderBy, onSnapshot, addDoc, deleteDoc, doc, updateDoc, getDocs, setDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, addDoc, deleteDoc, doc, updateDoc, getDocs, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '../lib/AuthContext';
 import { Exam } from '../types';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './ui/card';
@@ -8,7 +8,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
-import { Plus, Trash2, Clock, FileText, ClipboardList, Eye, EyeOff, BookOpen, Brain, Code, Globe, Calculator, FlaskConical, Search, ShieldCheck, CheckCircle2, Zap, Send } from 'lucide-react';
+import { Plus, Trash2, Clock, FileText, ClipboardList, Eye, EyeOff, BookOpen, Brain, Code, Globe, Calculator, FlaskConical, Search, ShieldCheck, CheckCircle2, Zap, Send, Edit3 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useNavigate } from 'react-router-dom';
@@ -37,12 +37,46 @@ export const AdminExams: React.FC = () => {
   const [schools, setSchools] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editingExam, setEditingExam] = useState<Exam | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDispatchExam, setSelectedDispatchExam] = useState<any | null>(null);
   const [step, setStep] = useState(1);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(6);
   const [schoolLinks, setSchoolLinks] = useState<Record<string, string>>({});
+
+  const [editExamState, setEditExamState] = useState({
+    title: '',
+    description: '',
+    subject: 'Computer Science',
+    difficulty: 'Medium' as 'Easy' | 'Medium' | 'Hard',
+    duration: 30,
+    totalMarks: 100,
+    startTime: '',
+    endTime: '',
+    assignedSchoolIds: [] as string[]
+  });
+
+  const [newExamMode, setNewExamMode] = useState<'global' | 'specific'>('global');
+  const [editExamMode, setEditExamMode] = useState<'global' | 'specific'>('global');
+
+  const startEditExam = (exam: Exam) => {
+    setEditingExam(exam);
+    setEditExamState({
+      title: exam.title || '',
+      description: exam.description || '',
+      subject: exam.subject || 'Computer Science',
+      difficulty: exam.difficulty || 'Medium',
+      duration: exam.duration || 30,
+      totalMarks: exam.totalMarks || 100,
+      startTime: exam.startTime || '',
+      endTime: exam.endTime || '',
+      assignedSchoolIds: exam.assignedSchoolIds || []
+    });
+    setEditExamMode(exam.assignedSchoolIds && exam.assignedSchoolIds.length > 0 ? 'specific' : 'global');
+    setIsEditOpen(true);
+  };
 
   // Real-time link mappings for schools
   useEffect(() => {
@@ -134,32 +168,69 @@ export const AdminExams: React.FC = () => {
     return () => unsubscribe();
   }, [profile]);
 
+  const canAdvanceStep = (currentStep: number): boolean => {
+    if (currentStep === 1) {
+      if (!newExam.title.trim()) {
+        toast.error("Validation failed: Please provide an exam academic title");
+        return false;
+      }
+      if (!newExam.subject) {
+        toast.error("Validation failed: Please select a subject category");
+        return false;
+      }
+      if (!newExam.description.trim()) {
+        toast.error("Validation failed: Please provide manual instructions for the student guidelines");
+        return false;
+      }
+    }
+    if (currentStep === 2) {
+      if (!newExam.totalMarks || newExam.totalMarks <= 0) {
+        toast.error("Validation failed: Total marks must be a positive number greater than 0");
+        return false;
+      }
+      if (!newExam.duration || newExam.duration <= 0) {
+        toast.error("Validation failed: Duration must be a positive integer (at least 1 minute)");
+        return false;
+      }
+      if (!newExam.difficulty) {
+        toast.error("Validation failed: Please select a difficulty heuristic");
+        return false;
+      }
+    }
+    if (currentStep === 3) {
+      if (!newExam.startTime) {
+        toast.error("Validation failed: Please select a valid Start Date and Time (From Date)");
+        return false;
+      }
+      if (!newExam.endTime) {
+        toast.error("Validation failed: Please select a valid End Date and Time (To Date)");
+        return false;
+      }
+      const start = new Date(newExam.startTime).getTime();
+      const end = new Date(newExam.endTime).getTime();
+      if (isNaN(start) || isNaN(end)) {
+        toast.error("Validation failed: Please ensure you have selected valid dates/times for both Start and End");
+        return false;
+      }
+      if (end <= start) {
+        toast.error("Validation failed: The ending date/time bounds must be set after the starter start date/time");
+        return false;
+      }
+      if (newExamMode === 'specific' && newExam.assignedSchoolIds.length === 0) {
+        toast.error("Validation failed: Please select at least one school for the specific school cluster allocation, or choose Global.");
+        return false;
+      }
+    }
+    return true;
+  };
+
   const handleCreateExam = async () => {
     if (!profile) return;
-    if (!newExam.title) {
-        toast.error("Validation failed: Please provide an exam academic title");
-        return;
+    if (!canAdvanceStep(1) || !canAdvanceStep(2) || !canAdvanceStep(3)) {
+      return;
     }
-    if (!newExam.description) {
-        toast.error("Validation failed: Please provide a description for the student guidelines");
-        return;
-    }
-    if (!newExam.duration || newExam.duration <= 0) {
-        toast.error("Validation failed: Duration must be a positive integer (at least 1 minute)");
-        return;
-    }
-    if (!newExam.totalMarks || newExam.totalMarks <= 0) {
-        toast.error("Validation failed: Total marks must be a positive number greater than 0");
-        return;
-    }
-    if (newExam.startTime && newExam.endTime) {
-        const start = new Date(newExam.startTime).getTime();
-        const end = new Date(newExam.endTime).getTime();
-        if (end <= start) {
-            toast.error("Validation failed: The ending date/time bounds must be set after the starter start date/time");
-            return;
-        }
-    }
+
+    const finalAssignedSchoolIds = newExamMode === 'global' ? [] : newExam.assignedSchoolIds;
     
     try {
       const examsRef = collection(db, 'exams');
@@ -170,11 +241,12 @@ export const AdminExams: React.FC = () => {
         startTime: newExam.startTime || null,
         endTime: newExam.endTime || null,
         status: 'draft',
-        assignedSchoolIds: newExam.assignedSchoolIds || []
+        assignedSchoolIds: finalAssignedSchoolIds
       });
 
       toast.success("Exam created successfully");
       setIsCreateOpen(false);
+      setNewExamMode('global');
       setNewExam({
         title: '',
         description: '',
@@ -202,6 +274,123 @@ export const AdminExams: React.FC = () => {
     }
   };
 
+  const handleUpdateExam = async () => {
+    if (!editingExam) return;
+    if (!editExamState.title) {
+        toast.error("Validation failed: Please provide an exam academic title");
+        return;
+    }
+    if (!editExamState.description) {
+        toast.error("Validation failed: Please provide a description for the student guidelines");
+        return;
+    }
+    if (!editExamState.duration || editExamState.duration <= 0) {
+        toast.error("Validation failed: Duration must be a positive integer (at least 1 minute)");
+        return;
+    }
+    if (!editExamState.totalMarks || editExamState.totalMarks <= 0) {
+        toast.error("Validation failed: Total marks must be a positive number greater than 0");
+        return;
+    }
+    if (editExamState.startTime && editExamState.endTime) {
+        const start = new Date(editExamState.startTime).getTime();
+        const end = new Date(editExamState.endTime).getTime();
+        if (end <= start) {
+            toast.error("Validation failed: The ending date/time bounds must be set after the starter start date/time");
+            return;
+        }
+    }
+
+    const finalAssignedSchoolIds = editExamMode === 'global' ? [] : editExamState.assignedSchoolIds;
+    if (editExamMode === 'specific' && finalAssignedSchoolIds.length === 0) {
+        toast.error("Validation failed: Please select at least one school for the specific school cluster allocation, or choose Global.");
+        return;
+    }
+
+    const toastId = toast.loading("Updating exam parameters directly on secure endpoints...");
+
+    try {
+      const examId = editingExam.id;
+      const examRef = doc(db, 'exams', examId);
+      
+      const updateData: any = {
+        title: editExamState.title,
+        description: editExamState.description,
+        subject: editExamState.subject,
+        difficulty: editExamState.difficulty,
+        duration: Number(editExamState.duration) || 30,
+        totalMarks: Number(editExamState.totalMarks) || 100,
+        startTime: editExamState.startTime || null,
+        endTime: editExamState.endTime || null,
+        assignedSchoolIds: finalAssignedSchoolIds
+      };
+
+      // Update the exam paper parameters directly
+      await updateDoc(examRef, updateData);
+
+      // Provision secure exam links if exam is published
+      if (editingExam.status === 'published') {
+        let schoolsToProvision = finalAssignedSchoolIds || [];
+
+        if (schoolsToProvision.length === 0) {
+          const schoolsSnap = await getDocs(collection(db, 'schools'));
+          schoolsToProvision = schoolsSnap.docs.map(d => d.id);
+        }
+
+        const expiresAt = editExamState.endTime || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        for (const sId of schoolsToProvision) {
+          const tokenDocId = `gen_${sId}_${examId}`;
+          const tokenRef = doc(db, 'secure_exam_links', tokenDocId);
+          const tokenSnap = await getDoc(tokenRef);
+          
+          if (tokenSnap.exists()) {
+            await updateDoc(tokenRef, {
+              isActive: true,
+              expiresAt
+            });
+          } else {
+            // Generate a cryptographically strong unique secure token segment
+            const uuidToken = `tkn_${crypto.randomUUID().replace(/-/g, "")}`;
+
+            await setDoc(tokenRef, {
+              id: uuidToken,
+              examId,
+              schoolId: sId,
+              isActive: true,
+              expiresAt,
+              createdAt: new Date().toISOString()
+            });
+          }
+        }
+
+        // Deactivate tokens for schools that are no longer assigned
+        const allSchoolsSnap = await getDocs(collection(db, 'schools'));
+        const allSchoolIds = allSchoolsSnap.docs.map(d => d.id);
+        const unassignedSchoolIds = allSchoolIds.filter(sId => !schoolsToProvision.includes(sId));
+
+        for (const sId of unassignedSchoolIds) {
+          const tokenDocId = `gen_${sId}_${examId}`;
+          const tokenRef = doc(db, 'secure_exam_links', tokenDocId);
+          const tokenSnap = await getDoc(tokenRef);
+          if (tokenSnap.exists()) {
+            await updateDoc(tokenRef, {
+              isActive: false,
+              revokedAt: new Date().toISOString()
+            });
+          }
+        }
+      }
+
+      toast.success("Exam paper parameters, date windows, and institute allocation updated successfully!", { id: toastId });
+      setIsEditOpen(false);
+      setEditingExam(null);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to update exam", { id: toastId });
+      console.error(error);
+    }
+  };
+
   const handleToggleStatus = async (exam: Exam) => {
     const nextStatus = exam.status === 'published' ? 'draft' : 'published';
     try {
@@ -224,20 +413,45 @@ export const AdminExams: React.FC = () => {
         for (const sId of schoolsToProvision) {
           const tokenDocId = `gen_${sId}_${exam.id}`;
           const tokenRef = doc(db, 'secure_exam_links', tokenDocId);
-          // Generate a cryptographically strong unique secure token segment
-          const uuidToken = `tkn_${crypto.randomUUID().replace(/-/g, "")}`;
+          const tokenSnap = await getDoc(tokenRef);
 
-          await setDoc(tokenRef, {
-            id: uuidToken,
-            examId: exam.id,
-            schoolId: sId,
-            isActive: true,
-            expiresAt: expiresAt,
-            createdAt: new Date().toISOString()
-          }, { merge: true });
+          if (tokenSnap.exists()) {
+            await updateDoc(tokenRef, {
+              isActive: true,
+              expiresAt: expiresAt
+            });
+          } else {
+            // Generate a cryptographically strong unique secure token segment
+            const uuidToken = `tkn_${crypto.randomUUID().replace(/-/g, "")}`;
+
+            await setDoc(tokenRef, {
+              id: uuidToken,
+              examId: exam.id,
+              schoolId: sId,
+              isActive: true,
+              expiresAt: expiresAt,
+              createdAt: new Date().toISOString()
+            });
+          }
         }
 
         toast.success(`Generated cryptographically locked dynamic links for ${schoolsToProvision.length} schools.`);
+      } else {
+        // Deactivate all tokens for this exam when changing back to draft (unpublished)
+        const schoolsSnap = await getDocs(collection(db, 'schools'));
+        const allSchoolIds = schoolsSnap.docs.map(d => d.id);
+
+        for (const sId of allSchoolIds) {
+          const tokenDocId = `gen_${sId}_${exam.id}`;
+          const tokenRef = doc(db, 'secure_exam_links', tokenDocId);
+          const tokenSnap = await getDoc(tokenRef);
+          if (tokenSnap.exists()) {
+            await updateDoc(tokenRef, {
+              isActive: false,
+              revokedAt: new Date().toISOString()
+            });
+          }
+        }
       }
     } catch (error) {
       toast.error("Failed to update status");
@@ -293,7 +507,7 @@ export const AdminExams: React.FC = () => {
                               { id: 1, label: 'Definitions', desc: 'Core Metadata' },
                               { id: 2, label: 'Parameters', desc: 'Marks & Duration' },
                               { id: 3, label: 'Access Control', desc: 'Access Windows' },
-                              { id: 4, label: 'Finalize', desc: 'Initialize Portal' }
+                              { id: 4, label: 'Finalize', desc: 'Publish Question Paper' }
                            ].map((s) => (
                               <div key={s.id} className="flex items-center gap-4 group cursor-default">
                                  <div className={`h-8 w-8 rounded-full border-2 flex items-center justify-center text-[10px] font-black transition-all ${step >= s.id ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-slate-700 text-slate-500'}`}>
@@ -423,29 +637,28 @@ export const AdminExams: React.FC = () => {
                                     <div className="flex gap-2">
                                       <Button
                                         type="button"
-                                        variant={newExam.assignedSchoolIds.length === 0 ? "default" : "outline"}
-                                        onClick={() => setNewExam({ ...newExam, assignedSchoolIds: [] })}
-                                        className={`text-[10.5px] font-black uppercase tracking-wider rounded-xl py-2 px-3 h-9 ${newExam.assignedSchoolIds.length === 0 ? 'bg-indigo-650 text-white hover:bg-slate-950' : 'bg-transparent text-slate-800 border'}`}
+                                        variant={newExamMode === "global" ? "default" : "outline"}
+                                        onClick={() => setNewExamMode("global")}
+                                        className={`text-[10.5px] font-black uppercase tracking-wider rounded-xl py-2 px-3 h-9 ${newExamMode === "global" ? 'bg-indigo-650 text-white hover:bg-slate-950' : 'bg-transparent text-slate-800 border'}`}
                                       >
                                         Global (All Schools)
                                       </Button>
                                       <Button
                                         type="button"
-                                        variant={newExam.assignedSchoolIds.length > 0 ? "default" : "outline"}
+                                        variant={newExamMode === "specific" ? "default" : "outline"}
                                         onClick={() => {
-                                          if (schools.length > 0) {
+                                          setNewExamMode("specific");
+                                          if (newExam.assignedSchoolIds.length === 0 && schools.length > 0) {
                                             setNewExam({ ...newExam, assignedSchoolIds: [schools[0].id] });
-                                          } else {
-                                            toast.error("No other institutions registered yet to form a cluster.");
                                           }
                                         }}
-                                        className={`text-[10.5px] font-black uppercase tracking-wider rounded-xl py-2 px-3 h-9 ${newExam.assignedSchoolIds.length > 0 ? 'bg-indigo-650 text-white hover:bg-slate-950' : 'bg-transparent text-slate-800 border'}`}
+                                        className={`text-[10.5px] font-black uppercase tracking-wider rounded-xl py-2 px-3 h-9 ${newExamMode === "specific" ? 'bg-indigo-650 text-white hover:bg-slate-950' : 'bg-transparent text-slate-800 border'}`}
                                       >
                                         Specific Schools Cluster
                                       </Button>
                                     </div>
 
-                                    {newExam.assignedSchoolIds.length > 0 && schools.length > 0 && (
+                                    {newExamMode === "specific" && schools.length > 0 && (
                                       <div className="p-4 bg-slate-50 rounded-[20px] max-h-[150px] overflow-y-auto space-y-2 border border-slate-200/50">
                                         {schools.map((school) => {
                                           const checked = newExam.assignedSchoolIds.includes(school.id);
@@ -465,7 +678,7 @@ export const AdminExams: React.FC = () => {
                                                 }}
                                                 className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
                                               />
-                                              <span className="text-xs font-bold text-slate-705">{school.name}</span>
+                                              <span className="text-xs font-bold text-slate-700">{school.name}</span>
                                             </label>
                                           );
                                         })}
@@ -496,27 +709,66 @@ export const AdminExams: React.FC = () => {
                                   <Zap size={48} className="fill-white" />
                                </div>
                                <div>
-                                 <h3 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Initialize Portal?</h3>
+                                 <h3 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Publish Question Paper?</h3>
                                  <p className="text-sm font-medium text-slate-400 mt-2">Final validation required before deployment to the registry.</p>
                                </div>
-                               <div className="bg-slate-50 p-8 rounded-[32px] text-left border border-slate-100">
-                                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Summary Verification</p>
-                                  <div className="space-y-4">
-                                     <div className="flex justify-between text-xs font-black uppercase tracking-tight">
-                                        <span className="text-slate-500">Subject</span>
-                                        <span className="text-slate-900">{newExam.subject}</span>
-                                     </div>
-                                     <div className="flex justify-between text-xs font-black uppercase tracking-tight">
-                                        <span className="text-slate-500">Difficulty</span>
-                                        <span className="text-indigo-600 font-black">{newExam.difficulty}</span>
-                                     </div>
-                                     <div className="flex justify-between text-xs font-black uppercase tracking-tight">
-                                        <span className="text-slate-500">Total Run-Time</span>
-                                        <span className="text-slate-900">{newExam.duration} Minutes</span>
-                                     </div>
-                                  </div>
-                               </div>
-                             </motion.div>
+                               <div className="bg-slate-50 p-6 rounded-[32px] text-left border border-slate-100 max-h-[320px] overflow-y-auto space-y-4">
+                                   <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest border-b pb-2 mb-2">Summary Verification Checklist</p>
+                                   <div className="space-y-3">
+                                      <div className="flex flex-col gap-1 text-xs">
+                                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Exam Title</span>
+                                         <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">{newExam.title || "—"}</span>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-4">
+                                         <div className="flex flex-col gap-1 text-xs">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Subject</span>
+                                            <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">{newExam.subject}</span>
+                                         </div>
+                                         <div className="flex flex-col gap-1 text-xs">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Difficulty</span>
+                                            <span className="text-indigo-600 font-black bg-white p-2 rounded-lg border border-slate-100 uppercase">{newExam.difficulty}</span>
+                                         </div>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-4">
+                                         <div className="flex flex-col gap-1 text-xs">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Total Marks</span>
+                                            <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">{newExam.totalMarks} Marks</span>
+                                         </div>
+                                         <div className="flex flex-col gap-1 text-xs">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Total Run-Time</span>
+                                            <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">{newExam.duration} Minutes</span>
+                                         </div>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-4">
+                                         <div className="flex flex-col gap-1 text-xs">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">From (Start Date/Time)</span>
+                                            <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">{newExam.startTime ? new Date(newExam.startTime).toLocaleString() : "Not Set"}</span>
+                                         </div>
+                                         <div className="flex flex-col gap-1 text-xs">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">To (End Date/Time)</span>
+                                            <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">{newExam.endTime ? new Date(newExam.endTime).toLocaleString() : "Not Set"}</span>
+                                         </div>
+                                      </div>
+                                      <div className="flex flex-col gap-1 text-xs">
+                                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Institutional Allocation Scope</span>
+                                         <span className="text-slate-900 font-bold bg-white p-2 rounded-lg border border-slate-100">
+                                            {newExamMode === 'global' ? (
+                                              <span className="text-emerald-600 font-bold">Global (All Registered Schools)</span>
+                                            ) : (
+                                              <span className="text-indigo-600 font-bold">
+                                                Specific Schools Scope: {newExam.assignedSchoolIds.map(id => schools.find(s => s.id === id)?.name || id).join(', ') || 'No schools selected!'}
+                                              </span>
+                                            )}
+                                         </span>
+                                      </div>
+                                      <div className="flex flex-col gap-1 text-xs">
+                                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Guidelines & Instructions</span>
+                                         <span className="text-slate-600 font-medium bg-white p-2 rounded-lg border border-slate-100 block max-h-[80px] overflow-y-auto whitespace-pre-wrap">{newExam.description || "—"}</span>
+                                      </div>
+                                   </div>
+                                </div>
+                              
+                              </motion.div>
                            )}
                         </AnimatePresence>
                      </div>
@@ -526,9 +778,9 @@ export const AdminExams: React.FC = () => {
                            <Button variant="outline" onClick={() => setStep(step - 1)} className="flex-1 h-14 rounded-2xl border-slate-100 font-black text-[11px] uppercase tracking-widest text-slate-500">Previous</Button>
                         )}
                         {step < 4 ? (
-                           <Button onClick={() => setStep(step + 1)} className="flex-[2] bg-indigo-600 text-white h-14 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all">Continue Phase</Button>
+                           <Button onClick={() => { if (canAdvanceStep(step)) setStep(step + 1); }} className="flex-[2] bg-indigo-600 text-white h-14 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all">Continue Phase</Button>
                         ) : (
-                           <Button onClick={handleCreateExam} className="flex-[2] bg-slate-900 text-white h-14 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-black transition-all">Initialize Assessment</Button>
+                           <Button onClick={handleCreateExam} className="flex-[2] bg-slate-900 text-white h-14 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-black transition-all">Publish Question Paper</Button>
                         )}
                      </div>
                   </div>
@@ -567,6 +819,11 @@ export const AdminExams: React.FC = () => {
                         title={exam.status === 'published' ? 'Unpublish' : 'Publish'}
                       >
                         {exam.status === 'published' ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                      </Button>
+                    )}
+                     {canManage && (
+                      <Button variant="ghost" size="icon" className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 h-8 w-8 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => startEditExam(exam)} title="Edit parameters & dates">
+                        <Edit3 className="h-4 w-4" />
                       </Button>
                     )}
                     {canManage && (
@@ -739,6 +996,211 @@ export const AdminExams: React.FC = () => {
           isOpen={!!selectedDispatchExam}
           onClose={() => setSelectedDispatchExam(null)}
         />
+      )}
+
+      {isEditOpen && editingExam && (
+        <Dialog open={isEditOpen} onOpenChange={(open) => { setIsEditOpen(open); if (!open) setEditingExam(null); }}>
+          <DialogContent className="sm:max-w-[750px] p-0 overflow-hidden rounded-[24px] border border-slate-100 shadow-2xl bg-white">
+            <div className="bg-gradient-to-r from-slate-50 via-indigo-50/10 to-slate-50 px-8 py-6 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <DialogTitle className="font-display font-extrabold text-xl tracking-tight text-slate-900">Edit Assessment Criteria</DialogTitle>
+                <DialogDescription className="text-slate-500 text-xs mt-1">Reset timelines, modify parameters, or adjust institutional allocation.</DialogDescription>
+              </div>
+              <div className="p-3 bg-indigo-50 rounded-xl">
+                <Edit3 className="h-5 w-5 text-indigo-600 animate-pulse" />
+              </div>
+            </div>
+
+            <div className="p-8 max-h-[65vh] overflow-y-auto space-y-6 bg-white">
+              <div className="space-y-2">
+                <Label htmlFor="edit-title" className="text-xs font-black uppercase tracking-widest text-slate-500">Academic Title</Label>
+                <Input 
+                  id="edit-title"
+                  value={editExamState.title}
+                  onChange={(e) => setEditExamState(prev => ({ ...prev, title: e.target.value }))}
+                  placeholder="e.g., Advanced Fluid Dynamics Final"
+                  className="h-12 bg-slate-50/30 hover:bg-white focus:bg-white rounded-xl border-slate-200 text-sm transition-all"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit-desc" className="text-xs font-black uppercase tracking-widest text-slate-500">Assessment Guidelines</Label>
+                <Textarea 
+                  id="edit-desc"
+                  value={editExamState.description}
+                  onChange={(e) => setEditExamState(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Instructions for student execution..."
+                  className="min-h-[100px] bg-slate-50/30 hover:bg-white focus:bg-white rounded-xl border-slate-200 text-sm transition-all"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-subject" className="text-xs font-black uppercase tracking-widest text-slate-500">Academic Stream</Label>
+                  <Select 
+                    value={editExamState.subject} 
+                    onValueChange={(val) => setEditExamState(prev => ({ ...prev, subject: val }))}
+                  >
+                    <SelectTrigger id="edit-subject" className="h-12 bg-slate-50/30 hover:bg-white rounded-xl border-slate-200 text-sm transition-all">
+                      <SelectValue placeholder="Select Stream" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUBJECTS.map(subj => (
+                        <SelectItem key={subj} value={subj}>{subj}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-difficulty" className="text-xs font-black uppercase tracking-widest text-slate-500">Target Difficulty</Label>
+                  <Select 
+                    value={editExamState.difficulty} 
+                    onValueChange={(val: any) => setEditExamState(prev => ({ ...prev, difficulty: val }))}
+                  >
+                    <SelectTrigger id="edit-difficulty" className="h-12 bg-slate-50/30 hover:bg-white rounded-xl border-slate-200 text-sm transition-all">
+                      <SelectValue placeholder="Select Difficulty" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Easy">Easy (Foundation)</SelectItem>
+                      <SelectItem value="Medium">Medium (Intermediate)</SelectItem>
+                      <SelectItem value="Hard">Hard (Advanced)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-duration" className="text-xs font-black uppercase tracking-widest text-slate-500">Duration (Minutes)</Label>
+                  <Input 
+                    id="edit-duration"
+                    type="number"
+                    value={editExamState.duration}
+                    onChange={(e) => setEditExamState(prev => ({ ...prev, duration: parseInt(e.target.value) || 0 }))}
+                    className="h-12 bg-slate-50/30 hover:bg-white focus:bg-white rounded-xl border-slate-200 text-sm transition-all"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-marks" className="text-xs font-black uppercase tracking-widest text-slate-500">Total Marks</Label>
+                  <Input 
+                    id="edit-marks"
+                    type="number"
+                    value={editExamState.totalMarks}
+                    onChange={(e) => setEditExamState(prev => ({ ...prev, totalMarks: parseInt(e.target.value) || 0 }))}
+                    className="h-12 bg-slate-50/30 hover:bg-white focus:bg-white rounded-xl border-slate-200 text-sm transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-100 pt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-start" className="text-xs font-black uppercase tracking-widest text-slate-500">Start Window (Reset)</Label>
+                  <Input 
+                    id="edit-start"
+                    type="datetime-local"
+                    value={editExamState.startTime}
+                    onChange={(e) => setEditExamState(prev => ({ ...prev, startTime: e.target.value }))}
+                    className="h-12 bg-slate-50/30 hover:bg-white focus:bg-white rounded-xl border-slate-200 text-sm text-slate-600 transition-all"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-end" className="text-xs font-black uppercase tracking-widest text-slate-500">End Window (Reset)</Label>
+                  <Input 
+                    id="edit-end"
+                    type="datetime-local"
+                    value={editExamState.endTime}
+                    onChange={(e) => setEditExamState(prev => ({ ...prev, endTime: e.target.value }))}
+                    className="h-12 bg-slate-50/30 hover:bg-white focus:bg-white rounded-xl border-slate-200 text-sm text-slate-600 transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-4 space-y-4">
+                <div>
+                  <Label className="text-xs font-black uppercase tracking-widest text-slate-500">Institutional Cluster Allocations</Label>
+                  <p className="text-[11px] text-slate-400">Select schools permitted to dispatch and administer this assessment paper.</p>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant={editExamMode === "global" ? "default" : "outline"}
+                    onClick={() => setEditExamMode("global")}
+                    className={`text-[10.5px] font-black uppercase tracking-wider rounded-xl py-2 px-3 h-9 ${editExamMode === "global" ? 'bg-indigo-650 text-white hover:bg-slate-950' : 'bg-transparent text-slate-800 border'}`}
+                  >
+                    Global (All Schools)
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={editExamMode === "specific" ? "default" : "outline"}
+                    onClick={() => {
+                      setEditExamMode("specific");
+                      if (editExamState.assignedSchoolIds.length === 0 && schools.length > 0) {
+                        setEditExamState(prev => ({ ...prev, assignedSchoolIds: [schools[0].id] }));
+                      }
+                    }}
+                    className={`text-[10.5px] font-black uppercase tracking-wider rounded-xl py-2 px-3 h-9 ${editExamMode === "specific" ? 'bg-indigo-650 text-white hover:bg-slate-950' : 'bg-transparent text-slate-800 border'}`}
+                  >
+                    Specific Schools Cluster
+                  </Button>
+                </div>
+
+                {editExamMode === "specific" && schools.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[150px] overflow-y-auto p-1">
+                    {schools.map(school => {
+                      const isAssigned = editExamState.assignedSchoolIds.includes(school.id);
+                      return (
+                        <button
+                          key={school.id}
+                          type="button"
+                          onClick={() => {
+                            setEditExamState(prev => {
+                              const ids = prev.assignedSchoolIds.includes(school.id)
+                                ? prev.assignedSchoolIds.filter(id => id !== school.id)
+                                : [...prev.assignedSchoolIds, school.id];
+                              return { ...prev, assignedSchoolIds: ids };
+                            });
+                          }}
+                          className={`flex items-center justify-between p-3 rounded-xl border transition-all text-left text-xs font-semibold ${
+                            isAssigned 
+                              ? 'bg-indigo-50/70 border-indigo-200 text-indigo-700 shadow-sm shadow-indigo-50' 
+                              : 'bg-white border-slate-100 hover:border-slate-200 text-slate-600'
+                          }`}
+                        >
+                          <span className="truncate">{school.name}</span>
+                          <div className={`h-4 w-4 rounded-full flex items-center justify-center border transition-all ${
+                            isAssigned ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300 bg-white'
+                          }`}>
+                            {isAssigned && <CheckCircle2 className="h-3 w-3 text-white" />}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <DialogFooter className="p-6 bg-slate-50/80 border-t border-slate-100 flex gap-4">
+              <Button 
+                variant="outline" 
+                onClick={() => { setIsEditOpen(false); setEditingExam(null); }}
+                className="flex-1 h-12 rounded-xl font-bold text-xs text-slate-500 border-slate-200 bg-white hover:bg-slate-50 hover:text-slate-700 transition-all"
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleUpdateExam}
+                className="flex-[2] bg-indigo-600 hover:bg-indigo-700 text-white h-12 rounded-xl font-bold text-xs shadow-lg shadow-indigo-100 transition-all"
+              >
+                Save Changes & Deploy
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

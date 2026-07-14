@@ -165,6 +165,31 @@
         "order": { "type": "number" }
       },
       "required": ["value", "label", "icon", "desc"]
+    },
+    "Syllabus": {
+      "title": "Syllabus",
+      "description": "Syllabus velocity tracking for a subject.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "subject": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "status": { "type": "string", "enum": ["On Track", "Behind", "Critical"] },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "status": { "type": "string", "enum": ["completed", "in-progress", "pending"] },
+              "coverage": { "type": "number" },
+              "testsConducted": { "type": "number" }
+            }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["subject", "topics"]
     }
   },
   "firestore": {
@@ -211,6 +236,10 @@
     "/proctoring_logs/{logId}": {
       "schema": "ProctoringLog",
       "description": "Security events."
+    },
+    "/syllabus/{syllabusId}": {
+      "schema": "Syllabus",
+      "description": "Syllabus tracking documents."
     }
   }
 }

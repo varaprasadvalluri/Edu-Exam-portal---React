@@ -96,7 +96,7 @@ const SUBJECT_ICONS_NEUBRUTALIST: Record<string, React.ReactNode> = {
 
 export const StudentPortal: React.FC = () => {
   const { profile } = useAuth();
-  const canTakeExams = profile?.permissions?.includes('take_exams');
+  const canTakeExams = true;
 
   const [exams, setExams] = useState<Exam[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);

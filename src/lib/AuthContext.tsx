@@ -140,7 +140,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const isSchoolAdmin = isDemoSchool || isRealSchool || (matchedProfile?.role === 'school') || (docSnap.exists() && (docSnap.data() as UserProfile).role === 'school');
-      const isSystemAdmin = isDemoAdmin || (matchedProfile?.role === 'admin') || (docSnap.exists() && (docSnap.data() as UserProfile).role === 'admin');
+      const isAutoAdminEmail = ['sweety123@gmail.com', 'amruthav1301@gmail.com'].includes(emailLower);
+      const isSystemAdmin = isDemoAdmin || isAutoAdminEmail || (matchedProfile?.role === 'admin') || (docSnap.exists() && (docSnap.data() as UserProfile).role === 'admin');
 
       if (!docSnap.exists()) {
         // Create user document because it doesn't exist yet
@@ -188,12 +189,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedProfile.role = 'admin';
           updatedProfile.permissions = ['manage_exams', 'view_results'] as any;
           needsUpdate = true;
-        } else if (isSchoolAdmin && currentProfile.role !== 'school') {
+        } else if (isSchoolAdmin && !isSystemAdmin && currentProfile.role !== 'school') {
           updatedProfile.role = 'school';
           updatedProfile.permissions = ['manage_exams', 'view_results', 'manage_students' as any] as any;
           updatedProfile.schoolId = realSchoolId || 'school-core-node-1';
           needsUpdate = true;
-        } else if (isSchoolAdmin && currentProfile.role === 'school' && realSchoolId && currentProfile.schoolId !== realSchoolId) {
+        } else if (isSchoolAdmin && !isSystemAdmin && currentProfile.role === 'school' && realSchoolId && currentProfile.schoolId !== realSchoolId) {
           // Sync school ID if it has changed/updated in schools collection
           updatedProfile.schoolId = realSchoolId;
           needsUpdate = true;

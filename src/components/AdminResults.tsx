@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { db } from '../lib/firebase';
-import { doc, getDoc, collection, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs, addDoc, updateDoc, limit, startAfter, getCountFromServer, orderBy } from 'firebase/firestore';
 import { Attempt, Exam } from '../types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Button } from './ui/button';
@@ -18,6 +18,10 @@ export const AdminResults: React.FC = () => {
   const [questions, setQuestions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Pagination State
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+
   // Background report generation state parameters
   const [isGeneratingBulk, setIsGeneratingBulk] = useState(false);
   const [jobProgress, setJobProgress] = useState(0);
@@ -27,9 +31,15 @@ export const AdminResults: React.FC = () => {
   const { profile } = useAuth();
   const canViewResults = profile?.permissions?.includes('view_results');
 
+  // Additional states for millions scale pagination and sample analytics
+  const [totalAttemptsCount, setTotalAttemptsCount] = useState<number>(0);
+  const [lastVisibleDocs, setLastVisibleDocs] = useState<any[]>([]);
+  const [analyticsAttempts, setAnalyticsAttempts] = useState<Attempt[]>([]);
+  const [loadingList, setLoadingList] = useState(false);
+
   useEffect(() => {
     if (!canViewResults) return;
-    const fetchData = async () => {
+    const fetchBaseData = async () => {
       if (!examId) return;
       try {
         const examRef = doc(db, 'exams', examId);
@@ -46,20 +56,72 @@ export const AdminResults: React.FC = () => {
         const qsSnap = await getDocs(qQs);
         setQuestions(qsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         
-        let q = query(collection(db, 'attempts'), where('examId', '==', examId), where('status', '==', 'completed'));
+        // Build base attempts query
+        let baseQ = query(collection(db, 'attempts'), where('examId', '==', examId), where('status', '==', 'completed'));
         if (profile?.schoolId) {
-          q = query(collection(db, 'attempts'), where('examId', '==', examId), where('status', '==', 'completed'), where('schoolId', '==', profile.schoolId));
+          baseQ = query(collection(db, 'attempts'), where('examId', '==', examId), where('status', '==', 'completed'), where('schoolId', '==', profile.schoolId));
         }
-        const attemptsSnap = await getDocs(q);
-        setAttempts(attemptsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attempt)));
+
+        // 1. Get exact total count for participants badge and pagination
+        const countSnap = await getCountFromServer(baseQ);
+        setTotalAttemptsCount(countSnap.data().count);
+
+        // 2. Fetch a statistical subset (limit 200) for calculating high-fidelity question analytics and average scores
+        const sampleQ = query(baseQ, orderBy('score', 'desc'), limit(200));
+        const sampleSnap = await getDocs(sampleQ);
+        setAnalyticsAttempts(sampleSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attempt)));
+
       } catch (error) {
-        toast.error("Failed to load results and questions data");
+        console.error("Error loading exam statistics: ", error);
+        toast.error("Failed to load results metadata and metrics");
       } finally {
         setLoading(false);
       }
     };
-    fetchData();
+    fetchBaseData();
   }, [examId, canViewResults, profile]);
+
+  // Paginated List Loader for Roll-Sheet table
+  useEffect(() => {
+    if (!canViewResults || !examId) return;
+
+    const fetchListPage = async () => {
+      setLoadingList(true);
+      try {
+        let listQ = query(collection(db, 'attempts'), where('examId', '==', examId), where('status', '==', 'completed'), orderBy('score', 'desc'), limit(pageSize));
+        if (profile?.schoolId) {
+          listQ = query(collection(db, 'attempts'), where('examId', '==', examId), where('status', '==', 'completed'), where('schoolId', '==', profile.schoolId), orderBy('score', 'desc'), limit(pageSize));
+        }
+
+        if (page > 1) {
+          const cursorDoc = lastVisibleDocs[page - 2];
+          if (cursorDoc) {
+            listQ = query(listQ, startAfter(cursorDoc));
+          }
+        }
+
+        const listSnap = await getDocs(listQ);
+        const fetched = listSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attempt));
+        setAttempts(fetched);
+
+        if (listSnap.docs.length > 0) {
+          const lastDoc = listSnap.docs[listSnap.docs.length - 1];
+          setLastVisibleDocs(prev => {
+            const updated = [...prev];
+            updated[page - 1] = lastDoc;
+            return updated;
+          });
+        }
+      } catch (error) {
+        console.error("Error fetching list page:", error);
+        toast.error("Failed to load page of results");
+      } finally {
+        setLoadingList(false);
+      }
+    };
+
+    fetchListPage();
+  }, [examId, page, pageSize, canViewResults, profile]);
 
   const handleExport = () => {
     if (attempts.length === 0) {
@@ -85,7 +147,7 @@ export const AdminResults: React.FC = () => {
 
   // MODULE 5: Question-Level Analytics Aggregator
   const questionAnalytics = React.useMemo(() => {
-    if (questions.length === 0 || attempts.length === 0) return [];
+    if (questions.length === 0 || analyticsAttempts.length === 0) return [];
 
     return questions.map((q, idx) => {
       let attemptsCount = 0;
@@ -93,7 +155,7 @@ export const AdminResults: React.FC = () => {
       let fails = 0;
       let totalTime = 0;
 
-      attempts.forEach(att => {
+      analyticsAttempts.forEach(att => {
         const studentAns = att.answers?.[idx];
         if (studentAns === undefined || studentAns === null) return;
 
@@ -154,7 +216,7 @@ export const AdminResults: React.FC = () => {
         reason
       };
     });
-  }, [questions, attempts, exam]);
+  }, [questions, analyticsAttempts, exam]);
 
   // MODULE 4: Bulk PDF Generation triggers
   const handleTriggerBulkPdfReport = async () => {
@@ -234,12 +296,12 @@ export const AdminResults: React.FC = () => {
   if (loading) return <div>Loading exam reports...</div>;
   if (!exam) return <div>Exam not found</div>;
 
-  const averageScore = attempts.length > 0 
-    ? Math.round(attempts.reduce((acc, a) => acc + a.score, 0) / attempts.length) 
+  const averageScore = analyticsAttempts.length > 0 
+    ? Math.round(analyticsAttempts.reduce((acc, a) => acc + a.score, 0) / analyticsAttempts.length) 
     : 0;
   
-  const topScore = attempts.length > 0 
-    ? Math.max(...attempts.map(a => a.score)) 
+  const topScore = analyticsAttempts.length > 0 
+    ? Math.max(...analyticsAttempts.map(a => a.score)) 
     : 0;
 
   return (
@@ -266,7 +328,7 @@ export const AdminResults: React.FC = () => {
                </div>
                <span className="text-sm font-medium text-slate-500 uppercase tracking-wider font-bold text-[10px]">Participants</span>
             </div>
-            <div className="text-3xl font-display font-bold text-slate-900">{attempts.length}</div>
+            <div className="text-3xl font-display font-bold text-slate-900">{totalAttemptsCount}</div>
             <div className="text-xs text-slate-400 mt-1">Students completed</div>
          </div>
          
@@ -513,6 +575,33 @@ export const AdminResults: React.FC = () => {
                )}
             </TableBody>
          </Table>
+         {totalAttemptsCount > 0 && (
+            <div className="p-4 bg-slate-50 border-t border-slate-150 flex items-center justify-between">
+               <span className="text-xs text-slate-500 font-bold">
+                  Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, totalAttemptsCount)} of {totalAttemptsCount} rankings
+               </span>
+               <div className="flex gap-2">
+                  <Button
+                     variant="outline"
+                     size="sm"
+                     className="h-8 text-xs font-bold rounded-lg border-slate-200 cursor-pointer"
+                     disabled={page === 1 || loadingList}
+                     onClick={() => setPage(page - 1)}
+                  >
+                     Back
+                  </Button>
+                  <Button
+                     variant="outline"
+                     size="sm"
+                     className="h-8 text-xs font-bold rounded-lg border-slate-200 cursor-pointer"
+                     disabled={page * pageSize >= totalAttemptsCount || loadingList}
+                     onClick={() => setPage(page + 1)}
+                  >
+                     Next
+                  </Button>
+               </div>
+            </div>
+         )}
       </div>
     </div>
   );

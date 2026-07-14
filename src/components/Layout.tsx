@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { useAuth } from '../lib/AuthContext';
 import { Button } from './ui/button';
 import { LogOut, Menu, X, Bell, Search, Globe, ChevronRight } from 'lucide-react';
+import { db } from '../lib/firebase';
+import { doc, updateDoc } from 'firebase/firestore';
+import { toast } from 'sonner';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
@@ -124,6 +127,8 @@ const CuteTrophyIcon = () => (
 
 const CUTE_ICONS_MAPPING: Record<string, () => React.JSX.Element> = {
   'Intelligence Base': CuteDashboardIcon,
+  'Intelligence Base (Admin)': CuteDashboardIcon,
+  'Intelligence Base (School)': CuteDashboardIcon,
   'Intelligence-Based Assessments': CuteDashboardIcon,
   'Onboarding Student': CuteSchoolIcon,
   'Student Onboarding': CuteSchoolIcon,
@@ -174,28 +179,41 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     return <main>{children}</main>;
   }
 
+  const toggleSchoolContext = async () => {
+    if (!profile) return;
+    const isGlobal = !profile.schoolId;
+    const nextSchoolId = isGlobal ? 'school-core-node-1' : null;
+    try {
+      const userRef = doc(db, 'users', profile.uid);
+      await updateDoc(userRef, { schoolId: nextSchoolId });
+      toast.success(isGlobal ? "Switched to Specific School Context" : "Switched to Global System Context");
+      setTimeout(() => {
+        window.location.reload();
+      }, 800);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to toggle school context.");
+    }
+  };
+
   // Sidebar Menu Config
   const menuItems = [
-    // School-specific top-level nav actions, mapped using query parameters
+    { label: 'Intelligence Base', path: '/', roles: ['admin'] },
     { label: 'Intelligence Base', path: '/?tab=intelligence', roles: ['school'] },
     { label: 'Student Onboarding', path: '/?tab=onboarding', roles: ['school'] },
     { label: 'Assigned Exams', path: '/?tab=exams', roles: ['school'] },
-
-    // Admin exclusive or system management
-    { label: 'Intelligence Base', path: '/', roles: ['admin'] },
     { label: 'School Registry', path: '/admin/schools', roles: ['admin'] },
     { label: 'Exams Manager', path: '/admin/exams', roles: ['admin'] },
-    { label: 'Security proctors', path: '/admin/proctoring', roles: ['admin', 'school'] },
-    { label: 'Syllabus Tracker', path: '/admin/syllabus', roles: ['admin', 'school'] },
+    { label: 'Security proctors', path: '/admin/proctoring', roles: ['admin'] },
+    { label: 'Syllabus Tracker', path: '/admin/syllabus', roles: ['admin'] },
     { label: 'Merit Scoreboard', path: '/admin/merit', roles: ['admin', 'school'] },
     { label: 'System Analytics', path: '/admin/analytics', roles: ['admin'] },
     { label: 'Scale & Performance Hub', path: '/admin/performance', roles: ['admin'] },
   ];
 
-  // Filters items by workspace role authorizations and exceptions
-  const filteredMenuItems = menuItems.filter(item => 
-    item.roles.includes(profile?.role || '')
-  );
+  // Filters items properly based on active user role to prevent clutter and overlapping UI
+  const userRole = profile?.role || 'school';
+  const filteredMenuItems = menuItems.filter(item => item.roles.includes(userRole));
 
   // Checks URL string matches as accurate markers for selected highlights
   const isLinkActive = (itemPath: string) => {
@@ -213,6 +231,23 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   const isStudent = profile?.role === 'student';
+  const isExamPage = location.pathname.startsWith('/exam/') || location.pathname.startsWith('/result/');
+
+  if (isExamPage) {
+    return (
+      <div className="flex flex-col min-h-screen bg-[#F0F4FA] bg-[linear-gradient(to_right,#E1E8F2_1.5px,transparent_1.5px),linear-gradient(to_bottom,#E1E8F2_1.5px,transparent_1.5px)] bg-[size:3.5rem_3.5rem] font-sans text-slate-800 antialiased selection:bg-amber-200 selection:text-slate-900 overflow-y-auto">
+        <main className="flex-1 w-full p-4 md:p-6 lg:p-10">
+          <motion.div 
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="max-w-[1440px] mx-auto w-full"
+          >
+            {children}
+          </motion.div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#F0F4FA] bg-[linear-gradient(to_right,#E1E8F2_1.5px,transparent_1.5px),linear-gradient(to_bottom,#E1E8F2_1.5px,transparent_1.5px)] bg-[size:3.5rem_3.5rem] font-sans text-slate-800 antialiased selection:bg-amber-200 selection:text-slate-900">
@@ -378,6 +413,16 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
           
           <div className="flex items-center space-x-4">
+            {/* Global/Specific School Scope Switcher Button - always visible and clickable */}
+            <Button
+              onClick={toggleSchoolContext}
+              variant="outline"
+              className="h-11 px-4 bg-white hover:bg-slate-50 text-slate-700 border-2 border-b-[4px] border-slate-200 rounded-xl flex items-center gap-2 font-black text-[10px] uppercase tracking-wider shadow-sm transition-transform hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <Globe className={`h-4 w-4 ${profile?.schoolId ? 'text-indigo-500 animate-pulse' : 'text-emerald-500'}`} />
+              Scope: <span className="text-indigo-650">{profile?.schoolId ? "Specific School" : "Global System"}</span>
+            </Button>
+
             {/* Active notifications indicator - customized for children's star themes */}
             <Button variant="ghost" size="icon" className="h-11 w-11 text-amber-500 hover:text-amber-600 bg-amber-50 hover:bg-amber-100 border-2 border-b-[4px] border-amber-200/80 rounded-xl relative transition-transform hover:scale-105">
               <Bell className="h-5 w-5" />

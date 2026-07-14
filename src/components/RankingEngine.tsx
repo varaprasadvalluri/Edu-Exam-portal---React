@@ -23,18 +23,11 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
-const MOCK_RANKINGS = [
-  { rank: 1, name: 'Aryan Sharma', score: 98.5, percentile: 99.9, improvement: '+2.4%', branch: 'Whitefield', status: 'Elite' },
-  { rank: 2, name: 'Isha Patel', score: 97.2, percentile: 99.8, improvement: '+1.1%', branch: 'Bannerghatta', status: 'Elite' },
-  { rank: 3, name: 'Vikram Singh', score: 96.8, percentile: 99.5, improvement: '+0.5%', branch: 'Indiranagar', status: 'Advanced' },
-  { rank: 4, name: 'Ananya Rao', score: 95.4, percentile: 99.2, improvement: '-0.2%', branch: 'Whitefield', status: 'Advanced' },
-  { rank: 5, name: 'Kunal Verma', score: 94.1, percentile: 98.8, improvement: '+4.2%', branch: 'Bannerghatta', status: 'Rising' },
-];
-
 export const RankingEngine: React.FC = () => {
   const { profile } = useAuth();
   const [filter, setFilter] = useState('');
-  const [dynamicRankings, setDynamicRankings] = useState<any[]>([]);
+  const [students, setStudents] = useState<any[]>([]);
+  const [attempts, setAttempts] = useState<any[]>([]);
   const [schools, setSchools] = useState<any[]>([]);
   const [selectedSchoolId, setSelectedSchoolId] = useState<string>('all');
   const [loading, setLoading] = useState(true);
@@ -43,92 +36,227 @@ export const RankingEngine: React.FC = () => {
   const [sortField, setSortField] = useState<'rank' | 'percentile'>('rank');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
+  // Load schools to map branch names dynamically for everyone
   useEffect(() => {
-    if (profile?.role === 'admin') {
-      getDocs(collection(db, 'schools')).then(snap => {
-        setSchools(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      }).catch(err => console.error("Error loading schools in Merit tracker:", err));
-    }
-  }, [profile]);
+    getDocs(collection(db, 'schools')).then(snap => {
+      setSchools(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }).catch(err => console.error("Error loading schools in Merit tracker:", err));
+  }, []);
 
+  // Listen to students and exam attempts dynamically based on user role and dropdown filter
   useEffect(() => {
     if (!profile) return;
 
     setLoading(true);
-    // Pipeline data dynamic fetch: Completed exam attempts are loaded and partitioned specifically.
-    const q = (profile.role === 'school' || profile.role === 'student') && profile.schoolId
-      ? query(
-          collection(db, 'attempts'),
-          where('status', '==', 'completed'),
-          where('schoolId', '==', profile.schoolId)
-        )
-      : query(
-          collection(db, 'attempts'),
-          where('status', '==', 'completed')
-        );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const realList = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          name: data.studentName || 'Autonomous Candidate',
-          score: data.score || 0,
-          improvement: '+2.0%',
-          branch: data.schoolName || 'Autonomous Hub',
-          schoolId: data.schoolId || '',
-          status: (data.score >= 90) ? 'Elite' : (data.score >= 75) ? 'Advanced' : 'Rising',
-        };
-      });
-      setDynamicRankings(realList);
+    let studentsQuery;
+    let attemptsQuery;
+
+    // Determine the active school ID filter based on RBAC rules
+    const activeSchoolId = profile.role === 'admin' 
+      ? selectedSchoolId 
+      : (profile.schoolId || 'no-school-assigned');
+
+    if (activeSchoolId && activeSchoolId !== 'all') {
+      studentsQuery = query(
+        collection(db, 'users'),
+        where('role', '==', 'student'),
+        where('schoolId', '==', activeSchoolId)
+      );
+      attemptsQuery = query(
+        collection(db, 'attempts'),
+        where('status', '==', 'completed'),
+        where('schoolId', '==', activeSchoolId)
+      );
+    } else {
+      studentsQuery = query(
+        collection(db, 'users'),
+        where('role', '==', 'student')
+      );
+      attemptsQuery = query(
+        collection(db, 'attempts'),
+        where('status', '==', 'completed')
+      );
+    }
+
+    const unsubscribeStudents = onSnapshot(studentsQuery, (snapshot) => {
+      const studs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setStudents(studs);
+    }, (err) => {
+      console.error("Error subscribing to students: ", err);
+    });
+
+    const unsubscribeAttempts = onSnapshot(attemptsQuery, (snapshot) => {
+      const atts = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setAttempts(atts);
       setLoading(false);
     }, (err) => {
-      console.error("Pipeline Sync Error: ", err);
+      console.error("Error subscribing to attempts: ", err);
       setLoading(false);
     });
 
-    return () => unsubscribe();
-  }, [profile]);
+    return () => {
+      unsubscribeStudents();
+      unsubscribeAttempts();
+    };
+  }, [profile, selectedSchoolId]);
 
-  // Combine real rankings + mock rankings, sorted by score descending
+  // Aggregate and parse student-level metrics dynamically
   const combinedRankings = useMemo(() => {
-    let activeList = [...dynamicRankings];
+    // Group attempts by studentId
+    const attemptsByStudent: { [studentId: string]: any[] } = {};
+    attempts.forEach(att => {
+      const sId = att.studentId;
+      if (sId) {
+        if (!attemptsByStudent[sId]) {
+          attemptsByStudent[sId] = [];
+        }
+        attemptsByStudent[sId].push(att);
+      }
+    });
 
-    if (profile?.role === 'admin' && selectedSchoolId !== 'all') {
-      activeList = activeList.filter(item => item.schoolId === selectedSchoolId);
-    }
+    // Build map of schools to resolve branch name beautifully
+    const schoolNameMap: { [id: string]: string } = {};
+    schools.forEach(s => {
+      if (s.id) schoolNameMap[s.id] = s.name;
+    });
 
-    // Only view mock rankings if viewing global all schools
-    const showMocks = (profile?.role === 'admin' && selectedSchoolId === 'all') || (!profile);
-    const mockList = showMocks
-      ? MOCK_RANKINGS.map((m, idx) => ({ ...m, id: `mock-${idx}`, schoolId: 'mock' }))
-      : [];
+    const processedStudentIds = new Set<string>();
+    const list: any[] = [];
 
-    const list = [
-      ...activeList,
-      ...mockList
-    ];
+    // First process all registered candidates of the active partition
+    students.forEach(stud => {
+      const sId = stud.id || stud.uid;
+      processedStudentIds.add(sId);
 
-    const sorted = [...list].sort((a, b) => b.score - a.score);
+      const studAttempts = attemptsByStudent[sId] || [];
+      const completedAttempts = studAttempts.filter(a => a.status === 'completed');
+      
+      const examsAttended = completedAttempts.length;
+      
+      let averagePercentage = 0;
+      let averageScore = 0;
+      
+      if (examsAttended > 0) {
+        const totalAccuracy = completedAttempts.reduce((sum, a) => sum + (a.accuracy !== undefined ? a.accuracy : (a.score || 0)), 0);
+        averagePercentage = Number((totalAccuracy / examsAttended).toFixed(1));
+        
+        const totalScore = completedAttempts.reduce((sum, a) => sum + (a.score || 0), 0);
+        averageScore = Number((totalScore / examsAttended).toFixed(1));
+      }
 
-    // Filter by name query
+      // Calculate trend/improvement dynamically based on difference between the two most recent attempts
+      let improvement = '0.0%';
+      if (examsAttended >= 2) {
+        const sortedAtts = [...completedAttempts].sort((a, b) => {
+          const tA = a.endTime ? new Date(a.endTime).getTime() : 0;
+          const tB = b.endTime ? new Date(b.endTime).getTime() : 0;
+          return tA - tB; // oldest to newest
+        });
+        const latest = sortedAtts[sortedAtts.length - 1];
+        const prev = sortedAtts[sortedAtts.length - 2];
+        const accuracyLatest = latest.accuracy !== undefined ? latest.accuracy : (latest.score || 0);
+        const accuracyPrev = prev.accuracy !== undefined ? prev.accuracy : (prev.score || 0);
+        const diff = accuracyLatest - accuracyPrev;
+        improvement = `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%`;
+      } else if (examsAttended === 1) {
+        improvement = '+0.0%';
+      } else {
+        improvement = '-';
+      }
+
+      list.push({
+        id: sId,
+        name: stud.name || 'Autonomous Candidate',
+        score: averageScore,
+        percentile: averagePercentage,
+        examsAttended,
+        improvement,
+        branch: stud.schoolName || schoolNameMap[stud.schoolId] || 'Autonomous Hub',
+        schoolId: stud.schoolId || '',
+        status: (averagePercentage >= 90) ? 'Elite' : (averagePercentage >= 75) ? 'Advanced' : 'Rising'
+      });
+    });
+
+    // In case there are completed attempts for students we didn't receive user docs for directly
+    attempts.forEach(att => {
+      const sId = att.studentId;
+      if (sId && !processedStudentIds.has(sId)) {
+        processedStudentIds.add(sId);
+
+        const studAttempts = attemptsByStudent[sId] || [];
+        const completedAttempts = studAttempts.filter(a => a.status === 'completed');
+        const examsAttended = completedAttempts.length;
+
+        let averagePercentage = 0;
+        let averageScore = 0;
+        
+        if (examsAttended > 0) {
+          const totalAccuracy = completedAttempts.reduce((sum, a) => sum + (a.accuracy !== undefined ? a.accuracy : (a.score || 0)), 0);
+          averagePercentage = Number((totalAccuracy / examsAttended).toFixed(1));
+          
+          const totalScore = completedAttempts.reduce((sum, a) => sum + (a.score || 0), 0);
+          averageScore = Number((totalScore / examsAttended).toFixed(1));
+        }
+
+        let improvement = '0.0%';
+        if (examsAttended >= 2) {
+          const sortedAtts = [...completedAttempts].sort((a, b) => {
+            const tA = a.endTime ? new Date(a.endTime).getTime() : 0;
+            const tB = b.endTime ? new Date(b.endTime).getTime() : 0;
+            return tA - tB;
+          });
+          const latest = sortedAtts[sortedAtts.length - 1];
+          const prev = sortedAtts[sortedAtts.length - 2];
+          const accuracyLatest = latest.accuracy !== undefined ? latest.accuracy : (latest.score || 0);
+          const accuracyPrev = prev.accuracy !== undefined ? prev.accuracy : (prev.score || 0);
+          const diff = accuracyLatest - accuracyPrev;
+          improvement = `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%`;
+        } else if (examsAttended === 1) {
+          improvement = '+0.0%';
+        } else {
+          improvement = '-';
+        }
+
+        list.push({
+          id: sId,
+          name: att.studentName || 'Autonomous Candidate',
+          score: averageScore,
+          percentile: averagePercentage,
+          examsAttended,
+          improvement,
+          branch: att.schoolName || schoolNameMap[att.schoolId] || 'Autonomous Hub',
+          schoolId: att.schoolId || '',
+          status: (averagePercentage >= 90) ? 'Elite' : (averagePercentage >= 75) ? 'Advanced' : 'Rising'
+        });
+      }
+    });
+
+    // Establish rank based on average accuracy percentage descending
+    const sorted = [...list].sort((a, b) => b.percentile - a.percentile || b.score - a.score);
+
+    // Apply query search filtering
     const filteredList = sorted.filter(candidate => 
       candidate.name.toLowerCase().includes(filter.toLowerCase())
     );
 
-    // Assign overall rank indices dynamically based on the original full sorted list
+    // Map positional index/rank onto the objects
     const assigned = filteredList.map((cand) => {
       const originalIndex = sorted.findIndex(item => item.id === cand.id);
       const rank = originalIndex + 1;
-      const percentile = Number((100 - (originalIndex / Math.max(1, sorted.length)) * 10).toFixed(1));
       return {
         ...cand,
-        rank,
-        percentile
+        rank
       };
     });
 
-    // Apply custom sort for Rank and Percentage (percentile)
+    // Sort according to grid selections
     return assigned.sort((a, b) => {
       let valA = 0;
       let valB = 0;
@@ -143,7 +271,27 @@ export const RankingEngine: React.FC = () => {
       const comp = valA > valB ? 1 : -1;
       return sortDirection === 'asc' ? comp : -comp;
     });
-  }, [dynamicRankings, filter, selectedSchoolId, profile, sortField, sortDirection]);
+  }, [students, attempts, filter, schools, sortField, sortDirection]);
+
+  // Compute live calculated stats summary panel cards
+  const statsSummary = useMemo(() => {
+    const totalCandidates = combinedRankings.length;
+    const candidatesWithAttempts = combinedRankings.filter(c => c.examsAttended > 0);
+    
+    const sumAccuracy = candidatesWithAttempts.reduce((sum, item) => sum + item.percentile, 0);
+    const meanPercentage = candidatesWithAttempts.length > 0 
+      ? Number((sumAccuracy / candidatesWithAttempts.length).toFixed(1)) 
+      : 0.0;
+
+    const masteryCount = candidatesWithAttempts.filter(item => item.percentile >= 75).length;
+    const masteryString = `${masteryCount}/${totalCandidates}`;
+
+    return [
+      { label: 'Total Candidates', value: totalCandidates.toLocaleString(), icon: <Users size={28} />, color: 'bg-indigo-50 text-indigo-600' },
+      { label: 'Mean Percentage', value: `${meanPercentage}%`, icon: <TrendingUp size={28} />, color: 'bg-emerald-50 text-emerald-600' },
+      { label: 'Mastery Quota (≥75%)', value: masteryString, icon: <Target size={28} />, color: 'bg-amber-50 text-amber-600' }
+    ];
+  }, [combinedRankings]);
 
   return (
     <div className="space-y-8 pb-20">
@@ -167,11 +315,7 @@ export const RankingEngine: React.FC = () => {
 
       {/* Stats Summary Panel */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-         {[
-            { label: 'Total Candidates', value: '12,402', icon: <Users size={28} />, color: 'bg-indigo-50 text-indigo-600' },
-            { label: 'Mean Velocity', value: '74.2%', icon: <TrendingUp size={28} />, color: 'bg-emerald-50 text-emerald-600' },
-            { label: 'Mastery Quota', value: '88/100', icon: <Target size={28} />, color: 'bg-amber-50 text-amber-600' }
-         ].map((stat, i) => (
+         {statsSummary.map((stat, i) => (
             <Card key={i} className="shadow-2xl shadow-slate-200/40 border-0 rounded-[32px] bg-white overflow-hidden group">
                <CardContent className="p-8 flex items-center gap-6">
                   <div className={`h-16 w-16 ${stat.color} rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110`}>
@@ -205,6 +349,14 @@ export const RankingEngine: React.FC = () => {
                   ))}
                 </SelectContent>
               </Select>
+            )}
+            {profile?.role === 'school' && (
+              <div className="bg-indigo-50 border border-indigo-100 px-4 py-2 rounded-xl flex flex-col justify-center text-left">
+                <span className="text-[9px] font-black uppercase text-indigo-500 tracking-wider">Your Institution</span>
+                <span className="text-xs font-black text-indigo-900">
+                  {schools.find(s => s.id === profile.schoolId)?.name || 'Your Assigned School'}
+                </span>
+              </div>
             )}
             <div className="relative w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
@@ -267,7 +419,7 @@ export const RankingEngine: React.FC = () => {
                           )}
                         </div>
                       </th>
-                      <th className="px-6 py-3.5 font-sans text-xs uppercase font-black tracking-wider text-slate-500 w-32">Velocity</th>
+                      <th className="px-6 py-3.5 font-sans text-xs uppercase font-black tracking-wider text-slate-500 w-32">Exam Attendance</th>
                       <th className="px-6 py-3.5 font-sans text-xs uppercase font-black tracking-wider text-slate-500 text-right">Institutional Branch</th>
                    </tr>
                 </thead>
@@ -302,8 +454,11 @@ export const RankingEngine: React.FC = () => {
                             </span>
                          </td>
                          <td className="px-6 py-2.5">
-                            <div className="flex items-center gap-1 text-[11px] font-bold">
-                               <span className={entry.improvement.startsWith('+') ? 'text-emerald-600' : 'text-rose-600'}>{entry.improvement}</span>
+                            <div className="flex flex-col gap-0.5 text-left">
+                               <span className="font-sans text-xs font-semibold text-slate-700">{entry.examsAttended} Attended</span>
+                               <span className={`text-[10px] font-bold ${entry.improvement.startsWith('+') ? 'text-emerald-600' : entry.improvement === '-' ? 'text-slate-400' : 'text-rose-600'}`}>
+                                  {entry.improvement} {entry.improvement !== '-' && 'progress'}
+                               </span>
                             </div>
                          </td>
                          <td className="px-6 py-2.5 text-right font-sans">

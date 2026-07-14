@@ -48,19 +48,17 @@ export const StudentLinkEntry: React.FC = () => {
   };
 
   useEffect(() => {
-    if (tokenError) {
-      const runProactiveSecurityPurge = async () => {
-        try {
-          await signOut();
-          setUsername('');
-          setRollNumber('');
-        } catch (e) {
-          console.warn("[Security Monitor] Failed proactive session clean-up:", e);
-        }
-      };
-      runProactiveSecurityPurge();
-    }
-  }, [tokenError, signOut]);
+    const runProactiveSecurityPurge = async () => {
+      try {
+        await signOut();
+        setUsername('');
+        setRollNumber('');
+      } catch (e) {
+        console.warn("[Security Monitor] Failed proactive session clean-up:", e);
+      }
+    };
+    runProactiveSecurityPurge();
+  }, [signOut]);
 
   useEffect(() => {
     const fetchDetails = async () => {
@@ -269,69 +267,119 @@ export const StudentLinkEntry: React.FC = () => {
 
       let finalStudentProfile: any = null;
 
-      // 2. MODULE 1: Unified Firestore Transaction Gatekeeper
-      await runTransaction(db, async (transaction) => {
-        const studentSnap = await transaction.get(studentDocRef);
-        const attemptSnap = await transaction.get(attemptDocRef);
+      // HYBRID TRANSITION ROUTING LAYER
+      let backendSuccess = false;
+      try {
+        console.log("Attempting secure state enrollment via Node.js Express backend API...");
+        const response = await fetch('/api/gatekeeper/enroll', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            matchedStudentId,
+            matchedStudentData,
+            username,
+            rollNumber,
+            finalSchoolId,
+            finalExamId,
+            examTitle: exam?.title,
+            clientFootprint
+          })
+        });
 
-        // A. Resolve student profile atomically on the db
-        if (studentSnap.exists()) {
-          finalStudentProfile = { uid: studentSnap.id, ...studentSnap.data() };
-        } else if (matchedStudentData) {
-          finalStudentProfile = { uid: resolvedStudentId, ...matchedStudentData };
+        if (response.ok) {
+          const resData = await response.json();
+          if (resData.success) {
+            finalStudentProfile = resData.finalStudentProfile;
+            attemptIdRaw = resData.attemptIdRaw;
+            backendSuccess = true;
+            console.log("Successfully processed gatekeeper enrollment via Node.js API backend.");
+          }
         } else {
-          // Auto-provision registration state safely on first entrance
-          finalStudentProfile = {
-            uid: resolvedStudentId,
-            name: username.trim(),
-            rollNumber: rollNumber.trim(),
-            schoolId: finalSchoolId,
-            role: 'student',
-            permissions: ['take_exams'],
-            createdAt: now.toISOString(),
-            class: 'Adaptive Cluster'
-          };
-          transaction.set(studentDocRef, finalStudentProfile);
-        }
-
-        // B. Resolve atomic attempt state
-        if (attemptSnap.exists()) {
-          const attemptData = attemptSnap.data() as any;
-
-          if (attemptData.status === 'completed') {
+          // Parse operational validation issues (e.g., attempt completed or session hijacking)
+          const errorPayload = await response.json().catch(() => ({}));
+          if (errorPayload.code === 'EXAM_ALREADY_COMPLETED') {
             throw new Error("EXAM_ALREADY_COMPLETED");
           }
+          if (errorPayload.code === 'SESSION_HIJACK_BLOCKED') {
+            throw new Error(errorPayload.error);
+          }
+          console.warn(`Server responded with failure: ${response.status}. Reverting to client-side Firebase fallback.`);
+        }
+      } catch (backendError: any) {
+        // Known authorization blocks must be rethrown to prevent bypasses
+        if (backendError.message === 'EXAM_ALREADY_COMPLETED' || backendError.message.includes("SESSION_HIJACK_BLOCKED")) {
+          throw backendError;
+        }
+        console.warn("Express backend API unreachable/unstable. Invoking client-side Firebase Fallback Rule:", backendError);
+      }
 
-          // MODULE 4: Same-Device Footprint matching for active session recovery
-          if (attemptData.deviceFootprint && attemptData.deviceFootprint !== clientFootprint) {
-            throw new Error("SESSION_HIJACK_BLOCKED: Mismatched browser/device footprint registered for this unique link. Please complete on your primary device or request a clean reset from terminal administrators.");
+      if (!backendSuccess) {
+        // 2. MODULE 1: Unified Firestore Transaction Gatekeeper (Graceful client-side fallback)
+        await runTransaction(db, async (transaction) => {
+          const studentSnap = await transaction.get(studentDocRef);
+          const attemptSnap = await transaction.get(attemptDocRef);
+
+          // A. Resolve student profile atomically on the db
+          if (studentSnap.exists()) {
+            finalStudentProfile = { uid: studentSnap.id, ...studentSnap.data() };
+          } else if (matchedStudentData) {
+            finalStudentProfile = { uid: resolvedStudentId, ...matchedStudentData };
+          } else {
+            // Auto-provision registration state safely on first entrance
+            finalStudentProfile = {
+              uid: resolvedStudentId,
+              name: username.trim(),
+              rollNumber: rollNumber.trim(),
+              schoolId: finalSchoolId,
+              role: 'student',
+              permissions: ['take_exams'],
+              createdAt: now.toISOString(),
+              class: 'Adaptive Cluster'
+            };
+            transaction.set(studentDocRef, finalStudentProfile);
           }
 
-          // Same device - allowed to resume. Let's record/update resume state.
-          transaction.update(attemptDocRef, {
-            lastResumedAt: now.toISOString(),
-            status: 'started' // ensure they are active again
-          });
-        } else {
-          // First-time session initiation
-          const newAttemptData = {
-            examId: finalExamId,
-            examTitle: exam?.title || 'Single Term Link Entry Exam',
-            studentId: resolvedStudentId,
-            studentName: finalStudentProfile.name,
-            studentEmail: finalStudentProfile.email || `${rollNumber.trim().toLowerCase()}@school.com`,
-            schoolId: finalSchoolId,
-            answers: [],
-            score: 0,
-            startTime: now.toISOString(),
-            status: 'started',
-            deviceFootprint: clientFootprint, // Bind lock
-            ephemeralToken: btoa(Math.random().toString()).substring(0, 16),
-            timePerQuestion: {}
-          };
-          transaction.set(attemptDocRef, newAttemptData);
-        }
-      });
+          // B. Resolve atomic attempt state
+          if (attemptSnap.exists()) {
+            const attemptData = attemptSnap.data() as any;
+
+            if (attemptData.status === 'completed') {
+              throw new Error("EXAM_ALREADY_COMPLETED");
+            }
+
+            // MODULE 4: Same-Device Footprint matching for active session recovery
+            if (attemptData.deviceFootprint && attemptData.deviceFootprint !== clientFootprint) {
+              throw new Error("SESSION_HIJACK_BLOCKED: Mismatched browser/device footprint registered for this unique link. Please complete on your primary device or request a clean reset from terminal administrators.");
+            }
+
+            // Same device - allowed to resume. Let's record/update resume state.
+            transaction.update(attemptDocRef, {
+              lastResumedAt: now.toISOString(),
+              status: 'started' // ensure they are active again
+            });
+          } else {
+            // First-time session initiation
+            const newAttemptData = {
+              examId: finalExamId,
+              examTitle: exam?.title || 'Single Term Link Entry Exam',
+              studentId: resolvedStudentId,
+              studentName: finalStudentProfile.name,
+              studentEmail: finalStudentProfile.email || `${rollNumber.trim().toLowerCase()}@school.com`,
+              schoolId: finalSchoolId,
+              answers: [],
+              score: 0,
+              startTime: now.toISOString(),
+              status: 'started',
+              deviceFootprint: clientFootprint, // Bind lock
+              ephemeralToken: btoa(Math.random().toString()).substring(0, 16),
+              timePerQuestion: {}
+            };
+            transaction.set(attemptDocRef, newAttemptData);
+          }
+        });
+      }
 
       // 3. Set social login bypass mapping profile in localStorage
       localStorage.setItem('invite_student_profile', JSON.stringify(finalStudentProfile));

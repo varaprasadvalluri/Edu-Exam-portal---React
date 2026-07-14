@@ -1,6 +1,6 @@
 import React, { useEffect, useState, KeyboardEvent } from 'react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDocs, limit, startAfter, getCountFromServer, where } from 'firebase/firestore';
 import { School, AuthPolicy } from '../types';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
@@ -67,8 +67,17 @@ export const AdminSchoolManagement: React.FC = () => {
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [view, setView] = useState<'grid' | 'list'>('list'); // Default to list view which houses the Live Monitor
   const [searchQuery, setSearchQuery] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(5); // Smaller default to showcase pagination controls
+  // Pagination states for scale of millions
+  const [totalSchoolsCount, setTotalSchoolsCount] = useState<number>(0);
+  const [lastVisibleDocs, setLastVisibleDocs] = useState<any[]>([]);
+  const [schoolPage, setSchoolPage] = useState<number>(1);
+  const [schoolPageSize, setSchoolPageSize] = useState<number>(10);
+  const [loadingSchools, setLoadingSchools] = useState<boolean>(false);
+
+  const page = schoolPage;
+  const setPage = setSchoolPage;
+  const pageSize = schoolPageSize;
+  const setPageSize = setSchoolPageSize;
   
   // Create School Form Data State
   const [formData, setFormData] = useState<{
@@ -117,19 +126,78 @@ export const AdminSchoolManagement: React.FC = () => {
     avgScore: ''
   });
 
+  // Reset page cursors when search query or page size changes
   useEffect(() => {
-    const q = query(collection(db, 'schools'), orderBy('name'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedSchools = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as School));
-      setSchools(fetchedSchools);
-      setLoading(false);
-    }, (error) => {
-      setLoading(false);
-      handleFirestoreError(error, OperationType.GET, 'schools');
-    });
+    setSchoolPage(1);
+    setLastVisibleDocs([]);
+  }, [searchQuery, schoolPageSize]);
 
-    return () => unsubscribe();
-  }, []);
+  // Combined effect to load schools page with counting
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      const loadSchools = async () => {
+        setLoadingSchools(true);
+        try {
+          // 1. Get the total count of schools matching search prefix if any
+          let countQ = query(collection(db, 'schools'));
+          if (searchQuery.trim()) {
+            const searchVal = searchQuery.trim();
+            countQ = query(
+              collection(db, 'schools'),
+              where('name', '>=', searchVal),
+              where('name', '<=', searchVal + '\uf8ff')
+            );
+          }
+          const countSnap = await getCountFromServer(countQ);
+          setTotalSchoolsCount(countSnap.data().count);
+
+          // 2. Fetch page of schools
+          let schoolQ = query(collection(db, 'schools'), orderBy('name'), limit(schoolPageSize));
+          if (searchQuery.trim()) {
+            const searchVal = searchQuery.trim();
+            schoolQ = query(
+              collection(db, 'schools'),
+              where('name', '>=', searchVal),
+              where('name', '<=', searchVal + '\uf8ff'),
+              orderBy('name'),
+              limit(schoolPageSize)
+            );
+          }
+
+          // Apply pagination cursor
+          if (schoolPage > 1) {
+            const cursorDoc = lastVisibleDocs[schoolPage - 2];
+            if (cursorDoc) {
+              schoolQ = query(schoolQ, startAfter(cursorDoc));
+            }
+          }
+
+          const snap = await getDocs(schoolQ);
+          const fetchedSchools = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as School));
+          setSchools(fetchedSchools);
+
+          if (snap.docs.length > 0) {
+            const lastDoc = snap.docs[snap.docs.length - 1];
+            setLastVisibleDocs(prev => {
+              const updated = [...prev];
+              updated[schoolPage - 1] = lastDoc;
+              return updated;
+            });
+          }
+        } catch (error) {
+          console.error("Error loading paginated schools:", error);
+          toast.error("Failed to load school directory page");
+        } finally {
+          setLoadingSchools(false);
+          setLoading(false);
+        }
+      };
+
+      loadSchools();
+    }, schoolPage === 1 ? 400 : 0);
+
+    return () => clearTimeout(handler);
+  }, [searchQuery, schoolPage, schoolPageSize]);
 
   // CRUD Operation: CREATE (Onboard School)
   const handleCreateSchool = async () => {
@@ -257,10 +325,7 @@ export const AdminSchoolManagement: React.FC = () => {
     });
   };
 
-  const filteredSchools = schools.filter(s => 
-    s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    s.adminEmail.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredSchools = schools;
 
   return (
     <div className="school-section">
@@ -481,7 +546,7 @@ export const AdminSchoolManagement: React.FC = () => {
               exit={{ opacity: 0, y: -20 }}
               className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
             >
-              {filteredSchools.slice((page - 1) * pageSize, page * pageSize).map(school => (
+              {filteredSchools.map(school => (
                 <Card key={school.id} className="group border-slate-200 hover:border-indigo-600/30 transition-all shadow-sm hover:shadow-2xl hover:shadow-indigo-500/5 bg-white overflow-hidden rounded-[24px] relative">
                   <div className={`h-1.5 w-full absolute top-0 left-0 transition-all ${school.status === 'active' ? 'bg-emerald-500' : 'bg-rose-400'}`} />
                   
@@ -547,57 +612,51 @@ export const AdminSchoolManagement: React.FC = () => {
             </motion.div>
 
             {/* Pagination Controls below Grid */}
-            <div className="p-6 border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/50">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-slate-400">Schools per page:</span>
-                <select 
-                  value={pageSize} 
-                  onChange={e => {
-                    setPageSize(parseInt(e.target.value));
-                    setPage(1);
-                  }}
-                  className="p-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-705 outline-none cursor-pointer"
-                >
-                  {[3, 5, 10, 20].map(size => (
-                    <option key={size} value={size}>{size}</option>
-                  ))}
-                </select>
-                <span className="text-xs font-medium text-slate-400 ml-4">
-                  Showing {Math.min(filteredSchools.length, (page - 1) * pageSize + 1)} - {Math.min(filteredSchools.length, page * pageSize)} of {filteredSchools.length} nodes
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs"
-                >
-                  Previous
-                </Button>
-                {Array.from({ length: Math.ceil(filteredSchools.length / pageSize) }).map((_, idx) => (
-                  <Button
-                    key={idx}
-                    variant={page === idx + 1 ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setPage(idx + 1)}
-                    className={`h-9 w-9 p-0 rounded-lg text-xs font-bold ${page === idx + 1 ? 'bg-indigo-600 text-white' : 'border-slate-200 text-slate-600'}`}
+            {totalSchoolsCount > 0 && (
+              <div className="p-6 border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/50">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-400">Schools per page:</span>
+                  <select 
+                    value={pageSize} 
+                    onChange={e => {
+                      setPageSize(parseInt(e.target.value));
+                      setPage(1);
+                    }}
+                    className="p-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-705 outline-none cursor-pointer"
                   >
-                    {idx + 1}
+                    {[3, 5, 10, 20].map(size => (
+                      <option key={size} value={size}>{size}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs font-medium text-slate-400 ml-4 font-mono">
+                    Showing {(page - 1) * pageSize + 1} - {Math.min(totalSchoolsCount, page * pageSize)} of {totalSchoolsCount} nodes
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1 || loadingSchools}
+                    className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs cursor-pointer"
+                  >
+                    Previous
                   </Button>
-                ))}
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setPage(p => Math.min(Math.ceil(filteredSchools.length / pageSize), p + 1))}
-                  disabled={page === Math.ceil(filteredSchools.length / pageSize) || filteredSchools.length === 0}
-                  className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs"
-                >
-                  Next
-                </Button>
+                  <div className="h-9 w-9 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center justify-center text-xs font-black text-indigo-700 font-mono">
+                    {page}
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setPage(p => p + 1)}
+                    disabled={page * pageSize >= totalSchoolsCount || loadingSchools}
+                    className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs cursor-pointer"
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         ) : (
           <div className="space-y-6">
@@ -620,7 +679,7 @@ export const AdminSchoolManagement: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-150">
-                  {filteredSchools.slice((page - 1) * pageSize, page * pageSize).map(school => (
+                  {filteredSchools.map(school => (
                     <tr key={school.id} className="hover:bg-indigo-50/10 transition-colors group font-mono text-xs animate-none">
                       <td className="px-8 py-4.5 font-sans">
                         <div className="flex items-center gap-4">
@@ -687,57 +746,51 @@ export const AdminSchoolManagement: React.FC = () => {
             </motion.div>
 
             {/* Pagination Controls below List Data Monitor */}
-            <div className="p-6 border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/50">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-slate-400">Schools per page:</span>
-                <select 
-                  value={pageSize} 
-                  onChange={e => {
-                    setPageSize(parseInt(e.target.value));
-                    setPage(1);
-                  }}
-                  className="p-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-707 outline-none cursor-pointer"
-                >
-                  {[3, 5, 10, 20].map(size => (
-                    <option key={size} value={size}>{size}</option>
-                  ))}
-                </select>
-                <span className="text-xs font-medium text-slate-400 ml-4">
-                  Showing {Math.min(filteredSchools.length, (page - 1) * pageSize + 1)} - {Math.min(filteredSchools.length, page * pageSize)} of {filteredSchools.length} Monitor Nodes
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs"
-                >
-                  Previous
-                </Button>
-                {Array.from({ length: Math.ceil(filteredSchools.length / pageSize) }).map((_, idx) => (
-                  <Button
-                    key={idx}
-                    variant={page === idx + 1 ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setPage(idx + 1)}
-                    className={`h-9 w-9 p-0 rounded-lg text-xs font-bold ${page === idx + 1 ? 'bg-indigo-600 text-white' : 'border-slate-200 text-slate-600'}`}
+            {totalSchoolsCount > 0 && (
+              <div className="p-6 border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/50">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-400">Schools per page:</span>
+                  <select 
+                    value={pageSize} 
+                    onChange={e => {
+                      setPageSize(parseInt(e.target.value));
+                      setPage(1);
+                    }}
+                    className="p-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-707 outline-none cursor-pointer"
                   >
-                    {idx + 1}
+                    {[3, 5, 10, 20].map(size => (
+                      <option key={size} value={size}>{size}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs font-medium text-slate-400 ml-4 font-mono">
+                    Showing {(page - 1) * pageSize + 1} - {Math.min(totalSchoolsCount, page * pageSize)} of {totalSchoolsCount} Monitor Nodes
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1 || loadingSchools}
+                    className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs cursor-pointer"
+                  >
+                    Previous
                   </Button>
-                ))}
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setPage(p => Math.min(Math.ceil(filteredSchools.length / pageSize), p + 1))}
-                  disabled={page === Math.ceil(filteredSchools.length / pageSize) || filteredSchools.length === 0}
-                  className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs"
-                >
-                  Next
-                </Button>
+                  <div className="h-9 w-9 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center justify-center text-xs font-black text-indigo-700 font-mono">
+                    {page}
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setPage(p => p + 1)}
+                    disabled={page * pageSize >= totalSchoolsCount || loadingSchools}
+                    className="h-9 px-3 rounded-lg border-slate-200 font-bold text-xs cursor-pointer"
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
       </AnimatePresence>

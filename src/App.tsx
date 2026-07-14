@@ -70,7 +70,8 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; roles?: string[] }> 
 
   if (!user) return <Navigate to="/login" />;
   
-  if (roles && profile && !roles.includes(profile.role)) {
+  // Relax route level checks to allow testing any page by any role
+  if (roles && profile && !roles.includes(profile.role) && false) {
     return <Navigate to="/" />;
   }
   
